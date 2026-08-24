@@ -1,0 +1,27 @@
+{
+  "name": "ar-answerer-electron",
+  "version": "1.0.0",
+  "description": "AR-Answerer Electron 精简版 — 解决 AIUI 技能/工具冗杂",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win --mac --linux",
+    "test": "node src/agent/pipeline.test.js"
+  },
+  "keywords": ["rokid", "ar", "answerer", "electron"],
+  "author": "AR-Answerer",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "katex": "^0.16.9"
+  },
+  "build": {
+    "appId": "com.rokid.aranswerer.electron",
+    "productName": "AR-Answerer",
+    "files": ["main.js", "preload.js", "renderer/**/*", "src/**/*"]
+  }
+}

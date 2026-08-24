@@ -1,0 +1,33 @@
+:root{color-scheme:dark;font-family:"Arial Narrow",Arial,sans-serif;--green:#40ff5e;--dim:rgba(64,255,94,.6);--bg:#000}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--green)}
+.frame{width:min(100vw,480px);height:640px;margin:0 auto;display:flex;flex-direction:column;background:var(--bg);overflow:hidden}
+.topbar{height:18px;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid var(--green);font-size:10px;letter-spacing:.1em}
+.brand{flex:1;font-weight:700}
+.status{opacity:.7;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stage{flex:1;overflow:hidden;display:flex;flex-direction:column}
+.stage[hidden]{display:none!important}
+/* capture 64px 大数字 + 15px provider 像 AIUI */
+.stage-capture{align-items:center;justify-content:center;gap:6px;padding:12px 0}
+.capture-count{font-size:56px;line-height:1;font-weight:600;color:var(--green)}
+.provider-info{font-size:12px;line-height:16px;color:var(--dim);text-align:center}
+/* preview 360x220 居中 紧凑 */
+.stage-preview{align-items:center;justify-content:center;padding:8px 10px}
+.photo-preview{width:360px;height:200px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000;border:1px solid rgba(64,255,94,.35);position:relative}
+.preview-img,#contour,#camera{width:100%;height:100%;object-fit:cover;display:block}
+.placeholder{position:absolute;inset:0;display:grid;place-items:center;font-size:12px;letter-spacing:.1em;color:var(--dim);border:1px dashed rgba(64,255,94,.25)}
+/* solving 进度条 + 思考流 */
+.stage-solving{padding:10px 12px;gap:8px}
+.progress-track{height:1px;background:rgba(64,255,94,.24);position:relative}
+.progress-dot{position:absolute;top:-2px;width:5px;height:5px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--dim)}
+.thinking-text{flex:1;overflow:auto;font-size:12px;line-height:16px;color:var(--dim);font-family:monospace;white-space:pre-wrap}
+.solving-sub{font-size:12px;line-height:16px;color:var(--dim);text-align:center}
+/* answer 高密度 16px → 14px 提高行数 */
+.stage-answer{padding:8px 12px}
+.answers{flex:1;overflow:auto;font-size:14px;line-height:18px;white-space:pre-wrap}
+.answer{border-left:2px solid var(--green);padding:2px 0 2px 8px;margin-bottom:6px}
+.stage-error{align-items:center;justify-content:center;padding:16px}
+.error-msg{font-size:14px;line-height:18px;color:var(--green);text-align:center}
+.controls{display:flex;gap:6px;padding:6px 10px 8px;border-top:1px solid rgba(64,255,94,.18)}
+button{flex:1;border:1px solid var(--green);background:var(--bg);color:var(--green);min-height:26px;font-size:10px;letter-spacing:.1em;cursor:pointer}
+button:hover{background:var(--green);color:#000}

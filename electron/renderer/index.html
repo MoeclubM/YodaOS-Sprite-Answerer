@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR-Answerer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="frame">
+    <header class="topbar"><span class="brand">AR ANSWERER</span><span id="status" class="status">READY</span></header>
+    <!-- AIUI 对齐：capture countdown + provider -->
+    <section id="stageCapture" class="stage stage-capture">
+      <div id="countdown" class="capture-count">--</div>
+      <div id="providerInfo" class="provider-info">gemini-3.7-flash · AWAIT IMAGE</div>
+    </section>
+    <!-- preview 需有内容：img/canvas/video 三者择一 -->
+    <section id="stagePreview" class="stage stage-preview" hidden>
+      <div class="photo-preview">
+        <img id="previewImg" class="preview-img" hidden />
+        <canvas id="contour" hidden></canvas>
+        <video id="camera" autoplay muted playsinline hidden></video>
+        <span id="placeholder" class="placeholder">NO IMAGE</span>
+      </div>
+    </section>
+    <section id="stageSolving" class="stage stage-solving" hidden>
+      <div class="progress-track"><div id="progressDot" class="progress-dot" style="left:0"></div></div>
+      <div id="reasoning" class="thinking-text"></div>
+      <div id="solvingSub" class="solving-sub"></div>
+    </section>
+    <section id="stageAnswer" class="stage stage-answer" hidden>
+      <div id="answers" class="answers"></div>
+    </section>
+    <section id="stageError" class="stage stage-error" hidden><div id="errorMsg" class="error-msg"></div></section>
+    <nav class="controls"><button id="choose" type="button">IMAGE</button><button id="cameraToggle" type="button">CAMERA</button></nav>
+    <input id="fileInput" type="file" accept="image/*" hidden />
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

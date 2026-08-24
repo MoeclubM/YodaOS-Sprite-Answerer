@@ -1,0 +1,30 @@
+# Gradle & Build
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# Electron
+node_modules/
+dist/
+out/
+*.log
+
+# Env & Secrets (敏感配置与本地私有预设隔离保护)
+.env
+.env.local
+.env.*
+*LocalSecrets.kt
+AppSecrets.local.kt
+AppConfig.local.kt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build Artifacts
+*.apk
+*.aab
+tmp/
