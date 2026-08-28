@@ -40,6 +40,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+/**
+ * 统一手势交互架构：
+ * 1. 彻底去除所有单击拍照 (杜绝误触)；
+ * 2. 上滑 (Swipe Up / Swipe Back) -> 切换模型 (休眠态) / 向上翻页 (答案态)；
+ * 3. 下滑 (Swipe Down / Swipe Forward) -> 拍照 (休眠态) / 提前抓拍 (取景态) / 向下翻页 (答案态)；
+ * 4. 长按 400ms -> 拍照；
+ * 5. 双击 -> 退出到休眠；
+ * 6. 设置面板 -> 右上角 ⚙ 独立触摸呼出。
+ */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
@@ -60,14 +69,13 @@ class MainActivity : AppCompatActivity() {
 
     private var startX = 0f
     private var startY = 0f
-    private var touchDownTime = 0L
 
     private var currentModelIndex = 0
 
     private var lastModelSwitchTime = 0L
-    private val MODEL_SWITCH_DEBOUNCE_MS = 400L
+    private val MODEL_SWITCH_DEBOUNCE_MS = 350L
 
-    // 触控板单指稳定长按达到 400ms 才允许唤醒进入拍摄
+    // 触控板长按 400ms 触发拍照
     private val longPressToCaptureRunnable = Runnable {
         if (state == 0) {
             Log.d("ARAnswerer", "Touchpad 400ms LongPress confirmed -> enterPreview")
@@ -111,7 +119,7 @@ class MainActivity : AppCompatActivity() {
             rightMargin = (10 * density).toInt()
         })
 
-        // 1. 左上角：纯电量展示 (无焦点、无点击，绝不进设置)
+        // 1. 左上角：纯电量展示
         battery = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 14f
@@ -149,12 +157,17 @@ class MainActivity : AppCompatActivity() {
         }
         safeContent.addView(status, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.TOP or Gravity.START })
 
-        // 4. 触控手势探测器：滑动切模型、双击返回
+        // 4. 触控手势探测器 (上滑切模型，下滑拍照，双击退出)
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (state == 0) {
-                    if (vx < -120 || vy > 120) switchModel(1)
-                    else if (vx > 120 || vy < -120) switchModel(-1)
+                // 上滑 (vy < -120 或 vx > 120 前滑/上滑)
+                if (vy < -120 || vx > 120) {
+                    handleSwipeUp()
+                    return true
+                }
+                // 下滑 (vy > 120 或 vx < -120 后滑/下滑)
+                if (vy > 120 || vx < -120) {
+                    handleSwipeDown()
                     return true
                 }
                 return false
@@ -167,50 +180,22 @@ class MainActivity : AppCompatActivity() {
                 }
                 return false
             }
-
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (state == 3) {
-                    goSleep()
-                    return true
-                }
-                return false
-            }
         })
 
         setContentView(root)
         goSleep()
 
-        // 5. 硬件按键分发器：严格区分外接戒指与触控板轻点
+        // 5. 硬件输入分发器 (触控板与外接戒指统一处理)
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
-                // 触控板长按广播 -> 触发拍照
                 if (state == 0) enterPreview()
             },
-            onRingClick = {
-                // 蓝牙戒指专属按键 -> 休眠态唤醒拍照，取景态提前抓拍，答案态回休眠
-                Log.d("ARAnswerer", "Ring Click Action: state=$state")
-                if (state == 0) {
-                    enterPreview()
-                } else if (state == 1) {
-                    triggerHardwareCapture()
-                } else if (state == 3) {
-                    goSleep()
-                }
+            onSwipeUp = {
+                handleSwipeUp()
             },
-            onTouchpadSingleTap = {
-                // 触控板物理轻点 (DPAD_CENTER) -> 仅在答案态用于退出休眠，休眠态绝对不触发拍照！
-                Log.d("ARAnswerer", "Touchpad SingleTap Action: state=$state")
-                if (state == 3) {
-                    goSleep()
-                }
-            },
-            onScrollAction = { deltaY ->
-                if (state == 0) {
-                    switchModel(if (deltaY > 0) 1 else -1)
-                } else if (state == 3) {
-                    katexWebView?.scrollBy(0, deltaY)
-                }
+            onSwipeDown = {
+                handleSwipeDown()
             }
         ).also { it.start() }
 
@@ -222,6 +207,24 @@ class MainActivity : AppCompatActivity() {
         try { if (!Settings.canDrawOverlays(this)) startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
         try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
+    }
+
+    private fun handleSwipeUp() {
+        if (state == 0) {
+            switchModel(1) // 休眠态上滑 -> 切换下一个大模型
+        } else if (state == 3) {
+            katexWebView?.scrollBy(0, -160) // 答案态上滑 -> 向上滚动
+        }
+    }
+
+    private fun handleSwipeDown() {
+        if (state == 0) {
+            enterPreview() // 休眠态下滑 -> 直接进入拍照取景！
+        } else if (state == 1) {
+            triggerHardwareCapture() // 取景态下滑 -> 提前抓拍
+        } else if (state == 3) {
+            katexWebView?.scrollBy(0, 160) // 答案态下滑 -> 向下滚动
+        }
     }
 
     private fun openSettingsDialog() {
@@ -286,8 +289,7 @@ class MainActivity : AppCompatActivity() {
             MotionEvent.ACTION_DOWN -> {
                 startX = ev.x
                 startY = ev.y
-                touchDownTime = System.currentTimeMillis()
-                // 触控板单指按住达到 400ms 才触发拍照 (快速点按抬起立即 cancel，绝对不进拍照)
+                // 仅长按 400ms 触发拍照，快速抬起/滑动立即取消
                 if (state == 0) {
                     handler.postDelayed(longPressToCaptureRunnable, 400)
                 }
