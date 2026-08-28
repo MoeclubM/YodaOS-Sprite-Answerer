@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -58,6 +59,9 @@ object NativePipelineEngine {
     )
 
     var currentModel: String = "gemini-3.7-flash"
+
+    // 全局模型回退回调：当触发回退到下一个模型时，通知 UI 在顶部提示 1s
+    var onModelFallbackHint: ((String) -> Unit)? = null
 
     private const val STAGE1_PROMPT =
         "提取图片中的所有题目,严禁解答。\n" +
@@ -132,6 +136,9 @@ object NativePipelineEngine {
         val model: String
     )
 
+    /**
+     * 统一底层流式请求（内置 25s 响应超时检测、单模型失败重试 1 次、失败自动 fallback 到下一个模型并提示）
+     */
     private suspend fun streamMessages(
         context: Context,
         messages: JSONArray,
@@ -139,123 +146,157 @@ object NativePipelineEngine {
         onToken: (suspend (String) -> Unit)? = null
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val modelsToTry = mutableListOf<String>()
-        modelsToTry.add(currentModel)
-        for (m in AVAILABLE_MODELS) {
-            if (m != currentModel && !modelsToTry.contains(m)) {
+        val startIdx = AVAILABLE_MODELS.indexOf(currentModel).let { if (it >= 0) it else 0 }
+        for (i in 0 until AVAILABLE_MODELS.size) {
+            val m = AVAILABLE_MODELS[(startIdx + i) % AVAILABLE_MODELS.size]
+            if (!modelsToTry.contains(m)) {
                 modelsToTry.add(m)
             }
         }
 
         var lastErr: Exception? = null
-        for (m in modelsToTry) {
-            val provider = getProviderConfig(context, m)
+
+        for (mIdx in 0 until modelsToTry.size) {
+            val targetModel = modelsToTry[mIdx]
+            val provider = getProviderConfig(context, targetModel)
             if (provider.key.isBlank()) {
                 continue
             }
 
-            var conn: HttpURLConnection? = null
-            try {
-                val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
-                val body = JSONObject().apply {
-                    put("model", provider.model)
-                    put("messages", messages)
-                    put("stream", true)
-                    if (tools != null && tools.length() > 0 && !isDeepSeek) {
-                        put("tools", tools)
-                    }
-                }
-
-                val url = URL(provider.endpoint)
-                conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 30000
-                    readTimeout = 60000
-                    doOutput = true
-                    doInput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    setRequestProperty("Accept", "text/event-stream")
-                    setRequestProperty("Authorization", "Bearer ${provider.key}")
-                }
-
-                conn.outputStream.use { os ->
-                    os.write(body.toString().toByteArray(Charsets.UTF_8))
-                    os.flush()
-                }
-
-                val code = conn.responseCode
-                if (code !in 200..299) {
-                    val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-                    throw RuntimeException("HTTP $code: $errBody")
-                }
-
-                val reader = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8))
-                val contentAcc = StringBuilder()
-                val reasoningAcc = StringBuilder()
-                val toolCallMap = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
-
-                var line: String? = reader.readLine()
-                while (line != null) {
-                    if (line.startsWith("data: ") && !line.contains("[DONE]")) {
-                        try {
-                            val dataStr = line.substring(6).trim()
-                            val chunk = JSONObject(dataStr)
-                            val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
-                            val delta = choice?.optJSONObject("delta")
-
-                            val c = delta?.optString("content")
-                            if (c != null && c.isNotEmpty() && c != "null") {
-                                contentAcc.append(c)
-                                onToken?.invoke(contentAcc.toString())
-                            }
-
-                            val r = delta?.optString("reasoning_content")
-                            if (r != null && r.isNotEmpty() && r != "null") {
-                                reasoningAcc.append(r)
-                            }
-
-                            val toolCallsArr = delta?.optJSONArray("tool_calls")
-                            if (toolCallsArr != null) {
-                                for (i in 0 until toolCallsArr.length()) {
-                                    val tcObj = toolCallsArr.optJSONObject(i) ?: continue
-                                    val idx = tcObj.optInt("index", i)
-                                    val id = tcObj.optString("id", "")
-                                    val fnObj = tcObj.optJSONObject("function")
-                                    val fnName = fnObj?.optString("name", "") ?: ""
-                                    val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
-
-                                    val existing = toolCallMap.getOrPut(idx) {
-                                        Triple(id, fnName, StringBuilder())
-                                    }
-                                    existing.third.append(fnArgsDelta)
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-                    line = reader.readLine()
-                }
-
-                val finalContent = contentAcc.toString().trim()
-                val finalReasoning = reasoningAcc.toString().trim()
-
-                val resultText = if (finalContent.isNotEmpty()) {
-                    finalContent
-                } else if (finalReasoning.isNotEmpty()) {
-                    finalReasoning
-                } else {
-                    ""
-                }
-
-                val finalToolCalls = toolCallMap.values.map {
-                    ToolCallInfo(it.first, it.second, it.third.toString())
-                }
-                return@withContext StreamChatResult(resultText, finalReasoning, finalToolCalls)
-            } catch (e: Exception) {
-                Log.w("NativePipelineEngine", "Provider ${provider.model} error", e)
-                lastErr = e
-            } finally {
+            // 每个模型最多尝试 2 次 (初次请求 + 失败重试 1 次)
+            for (attempt in 1..2) {
+                var conn: HttpURLConnection? = null
                 try {
-                    conn?.disconnect()
-                } catch (_: Exception) {}
+                    // 25s 超时管控机制
+                    val result = withTimeout(25000L) {
+                        val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
+                        val body = JSONObject().apply {
+                            put("model", provider.model)
+                            put("messages", messages)
+                            put("stream", true)
+                            if (tools != null && tools.length() > 0 && !isDeepSeek) {
+                                put("tools", tools)
+                            }
+                        }
+
+                        val url = URL(provider.endpoint)
+                        conn = (url.openConnection() as HttpURLConnection).apply {
+                            requestMethod = "POST"
+                            connectTimeout = 15000
+                            readTimeout = 25000
+                            doOutput = true
+                            doInput = true
+                            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                            setRequestProperty("Accept", "text/event-stream")
+                            setRequestProperty("Authorization", "Bearer ${provider.key}")
+                        }
+
+                        conn!!.outputStream.use { os ->
+                            os.write(body.toString().toByteArray(Charsets.UTF_8))
+                            os.flush()
+                        }
+
+                        val code = conn!!.responseCode
+                        if (code !in 200..299) {
+                            val errBody = conn!!.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                            throw RuntimeException("HTTP $code: $errBody")
+                        }
+
+                        val reader = BufferedReader(InputStreamReader(conn!!.inputStream, Charsets.UTF_8))
+                        val contentAcc = StringBuilder()
+                        val reasoningAcc = StringBuilder()
+                        val toolCallMap = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
+
+                        var line: String? = reader.readLine()
+                        while (line != null) {
+                            if (line.startsWith("data: ") && !line.contains("[DONE]")) {
+                                try {
+                                    val dataStr = line.substring(6).trim()
+                                    val chunk = JSONObject(dataStr)
+                                    val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
+                                    val delta = choice?.optJSONObject("delta")
+
+                                    val c = delta?.optString("content")
+                                    if (c != null && c.isNotEmpty() && c != "null") {
+                                        contentAcc.append(c)
+                                        onToken?.invoke(contentAcc.toString())
+                                    }
+
+                                    val r = delta?.optString("reasoning_content")
+                                    if (r != null && r.isNotEmpty() && r != "null") {
+                                        reasoningAcc.append(r)
+                                    }
+
+                                    val toolCallsArr = delta?.optJSONArray("tool_calls")
+                                    if (toolCallsArr != null) {
+                                        for (i in 0 until toolCallsArr.length()) {
+                                            val tcObj = toolCallsArr.optJSONObject(i) ?: continue
+                                            val idx = tcObj.optInt("index", i)
+                                            val id = tcObj.optString("id", "")
+                                            val fnObj = tcObj.optJSONObject("function")
+                                            val fnName = fnObj?.optString("name", "") ?: ""
+                                            val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
+
+                                            val existing = toolCallMap.getOrPut(idx) {
+                                                Triple(id, fnName, StringBuilder())
+                                            }
+                                            existing.third.append(fnArgsDelta)
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                            line = reader.readLine()
+                        }
+
+                        val finalContent = contentAcc.toString().trim()
+                        val finalReasoning = reasoningAcc.toString().trim()
+
+                        val resultText = if (finalContent.isNotEmpty()) {
+                            finalContent
+                        } else if (finalReasoning.isNotEmpty()) {
+                            finalReasoning
+                        } else {
+                            ""
+                        }
+
+                        val finalToolCalls = toolCallMap.values.map {
+                            ToolCallInfo(it.first, it.second, it.third.toString())
+                        }
+                        StreamChatResult(resultText, finalReasoning, finalToolCalls)
+                    }
+
+                    // 请求成功，更新全局当前模型
+                    currentModel = targetModel
+                    return@withContext result
+                } catch (e: Exception) {
+                    Log.w("NativePipelineEngine", "Model ${provider.model} attempt $attempt error: ${e.message}")
+                    lastErr = e
+                    // 第一次失败，短暂休眠 500ms 后进行第 2 次重试
+                    if (attempt == 1) {
+                        try { Thread.sleep(500) } catch (_: Exception) {}
+                    }
+                } finally {
+                    try {
+                        conn?.disconnect()
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // 该模型重试 1 次后仍失败，自动 fallback 到下一个模型并提示 1s
+            if (mIdx + 1 < modelsToTry.size) {
+                val nextModel = modelsToTry[mIdx + 1]
+                val nextDisplayName = when (nextModel) {
+                    "gemini-3.7-flash" -> "Gemini"
+                    "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+                    "gpt-5.6-luna" -> "Luna"
+                    "muse-spark-1.2" -> "MuseSpark"
+                    else -> nextModel
+                }
+                Log.i("NativePipelineEngine", "Fallback to next model: $nextDisplayName")
+                currentModel = nextModel
+                withContext(Dispatchers.Main) {
+                    onModelFallbackHint?.invoke(nextDisplayName)
+                }
             }
         }
         throw lastErr ?: RuntimeException("请求失败，请检查网络或 API Key")

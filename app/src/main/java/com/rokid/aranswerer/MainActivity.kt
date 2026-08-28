@@ -45,7 +45,8 @@ import kotlin.math.abs
  * 1. 隐藏右上角设置图标 (透明无可见元素，但保留右上角触摸打开设置面板)；
  * 2. 电量文字调暗 (0x7700ff66)，电量右侧显示当前步骤 step (如 "52 1" 或 "60 2")；
  * 3. 彻底解决 Stage 2 题目完成后 Stage 3 无反应/卡死的问题 (带熔断与直出兜底)；
- * 4. 统一手势：上滑切模型，下滑拍照，长按拍照，双击退出。
+ * 4. 25s 响应超时检测 + 单模型重试 1 次 + 失败自动 fallback 下一个模型并在顶部提示 1s；
+ * 5. 统一手势：上滑切模型，下滑拍照，长按拍照，双击退出。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -142,6 +143,13 @@ class MainActivity : AppCompatActivity() {
         }
         safeContent.addView(status, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.TOP or Gravity.START })
 
+        // 注册模型 Fallback 顶部 1s 提示监听
+        NativePipelineEngine.onModelFallbackHint = { fallbackModelName ->
+            runOnUiThread {
+                showModelFallbackNotification(fallbackModelName)
+            }
+        }
+
         // 3. 触控手势探测器 (上滑切模型，下滑拍照，双击退出)
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
@@ -198,6 +206,13 @@ class MainActivity : AppCompatActivity() {
         }
         val level = BatteryHelper.level(this)
         batteryStepView.text = if (currentStep > 0) "$level $currentStep" else "$level"
+    }
+
+    private fun showModelFallbackNotification(modelName: String) {
+        status.visibility = View.VISIBLE
+        status.text = "切换至 $modelName"
+        handler.removeCallbacks(hideModelStatusRunnable)
+        handler.postDelayed(hideModelStatusRunnable, 1000) // 严格提示 1s
     }
 
     private fun handleSwipeUp() {
