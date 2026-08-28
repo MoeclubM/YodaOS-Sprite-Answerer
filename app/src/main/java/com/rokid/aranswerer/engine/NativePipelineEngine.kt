@@ -12,8 +12,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.regex.Pattern
@@ -63,7 +62,6 @@ object NativePipelineEngine {
 
     var currentModel: String = "gemini-3.7-flash"
 
-    // 全局模型回退回调：当触发回退到下一个模型时，通知 UI 在顶部提示 1s
     var onModelFallbackHint: ((String) -> Unit)? = null
 
     private const val STAGE1_PROMPT =
@@ -140,6 +138,9 @@ object NativePipelineEngine {
         val model: String
     )
 
+    /**
+     * 真正的零缓冲字节流解析器：每收到一个 TCP Packet 立即解码并派发 onToken 回调
+     */
     private suspend fun streamMessages(
         context: Context,
         messages: JSONArray,
@@ -186,8 +187,11 @@ object NativePipelineEngine {
                             readTimeout = 25000
                             doOutput = true
                             doInput = true
+                            // 禁用内置 HTTP 缓冲，确保数据块立即可用
+                            setChunkedStreamingMode(0)
                             setRequestProperty("Content-Type", "application/json; charset=utf-8")
                             setRequestProperty("Accept", "text/event-stream")
+                            setRequestProperty("Cache-Control", "no-cache")
                             setRequestProperty("Authorization", "Bearer ${provider.key}")
                         }
 
@@ -202,50 +206,64 @@ object NativePipelineEngine {
                             throw RuntimeException("HTTP $code: $errBody")
                         }
 
-                        val reader = BufferedReader(InputStreamReader(conn!!.inputStream, Charsets.UTF_8))
+                        val inputStream: InputStream = conn!!.inputStream
+                        val buffer = ByteArray(1024)
+                        val sseBuffer = StringBuilder()
                         val contentAcc = StringBuilder()
                         val reasoningAcc = StringBuilder()
                         val toolCallMap = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
 
-                        var line: String? = reader.readLine()
-                        while (line != null) {
-                            if (line.startsWith("data: ") && !line.contains("[DONE]")) {
-                                try {
-                                    val dataStr = line.substring(6).trim()
-                                    val chunk = JSONObject(dataStr)
-                                    val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
-                                    val delta = choice?.optJSONObject("delta")
+                        var bytesRead: Int
+                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                            val chunkText = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                            sseBuffer.append(chunkText)
 
-                                    val c = delta?.optString("content")
-                                    if (c != null && c.isNotEmpty() && c != "null") {
-                                        contentAcc.append(c)
-                                        onToken?.invoke(contentAcc.toString())
-                                    }
+                            while (true) {
+                                val newlineIndex = sseBuffer.indexOf('\n')
+                                if (newlineIndex == -1) break
 
-                                    val r = delta?.optString("reasoning_content")
-                                    if (r != null && r.isNotEmpty() && r != "null") {
-                                        reasoningAcc.append(r)
-                                    }
+                                val line = sseBuffer.substring(0, newlineIndex).trim()
+                                sseBuffer.delete(0, newlineIndex + 1)
 
-                                    val toolCallsArr = delta?.optJSONArray("tool_calls")
-                                    if (toolCallsArr != null) {
-                                        for (i in 0 until toolCallsArr.length()) {
-                                            val tcObj = toolCallsArr.optJSONObject(i) ?: continue
-                                            val idx = tcObj.optInt("index", i)
-                                            val id = tcObj.optString("id", "")
-                                            val fnObj = tcObj.optJSONObject("function")
-                                            val fnName = fnObj?.optString("name", "") ?: ""
-                                            val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
+                                if (line.startsWith("data:") && !line.contains("[DONE]")) {
+                                    try {
+                                        val dataStr = line.substring(5).trim()
+                                        if (dataStr.isNotEmpty()) {
+                                            val chunk = JSONObject(dataStr)
+                                            val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
+                                            val delta = choice?.optJSONObject("delta")
 
-                                            val existing = toolCallMap.getOrPut(idx) {
-                                                Triple(id, fnName, StringBuilder())
+                                            val c = delta?.optString("content")
+                                            if (c != null && c.isNotEmpty() && c != "null") {
+                                                contentAcc.append(c)
+                                                onToken?.invoke(contentAcc.toString())
                                             }
-                                            existing.third.append(fnArgsDelta)
+
+                                            val r = delta?.optString("reasoning_content")
+                                            if (r != null && r.isNotEmpty() && r != "null") {
+                                                reasoningAcc.append(r)
+                                            }
+
+                                            val toolCallsArr = delta?.optJSONArray("tool_calls")
+                                            if (toolCallsArr != null) {
+                                                for (i in 0 until toolCallsArr.length()) {
+                                                    val tcObj = toolCallsArr.optJSONObject(i) ?: continue
+                                                    val idx = tcObj.optInt("index", i)
+                                                    val id = tcObj.optString("id", "")
+                                                    val fnObj = tcObj.optJSONObject("function")
+                                                    val fnName = fnObj?.optString("name", "") ?: ""
+                                                    val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
+
+                                                    val existing = toolCallMap.getOrPut(idx) {
+                                                        Triple(id, fnName, StringBuilder())
+                                                    }
+                                                    existing.third.append(fnArgsDelta)
+                                                }
+                                            }
                                         }
-                                    }
-                                } catch (_: Exception) {}
+                                    } catch (_: Exception) {}
+                                }
                             }
-                            line = reader.readLine()
                         }
 
                         val finalContent = contentAcc.toString().trim()
@@ -301,11 +319,12 @@ object NativePipelineEngine {
     }
 
     /**
-     * 实时增量解析 Stage 1 流式吐出的单道题目 (实现出一道显示一道)
+     * 高容错流式题目解析器：实时正则捕获已完整到达的单道题目
      */
     private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
         val list = mutableListOf<ExtractedQuestion>()
         try {
+            // 匹配 {"id": "...", "content": "..."}
             val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])", Pattern.DOTALL)
             val matcher = jsonObjectPattern.matcher(rawStreamText)
             var count = 0
@@ -331,7 +350,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 (支持流式出一题显示一题) =================
+        // ================= Stage 1: 题目提取 (真正流式：出一题立刻显示一题) =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -357,7 +376,6 @@ object NativePipelineEngine {
 
         var lastDispatchedCount = 0
         val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
-            // 实时流式解析：每提取出一道题目立即通知 UI 增量呈现！
             val partial = parseIncrementalQuestions(streamAcc)
             if (partial.size > lastDispatchedCount) {
                 lastDispatchedCount = partial.size
@@ -380,7 +398,6 @@ object NativePipelineEngine {
             return@withContext fallbackSolved
         }
 
-        // 最终确认 Stage 1 完整题目列表
         onStage1QuestionsUpdate(questions)
 
         // ================= Stage 2: 多题并发求解 =================

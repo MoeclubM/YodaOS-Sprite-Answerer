@@ -42,11 +42,12 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 严格进入 Stage 1 (显示 "52 1")，出一道题立刻实时显示一道题；
- * 2. Stage 2 多题并发求解，双列更新状态 ("52 2")；
- * 3. Stage 3 AR 总结与渲染 ("52 3")，最终答案严格保留原版题目实际题号；
- * 4. 25s 超时重试 + 失败自动 fallback 下一个模型 + 顶部 1s 提示；
- * 5. 暗色电量 + 隐藏右上角设置图标 (隐形触摸依然有效)。
+ * 1. 彻底移除所有冗余的"正在提取/解析题目"的铺垫文字提示，界面极简纯粹；
+ * 2. 真正的流式零缓冲输出：Stage 1 题目出一道立刻在屏幕上渲染一道；
+ * 3. Stage 2 多题并发求解状态实时双列展示 ("52 2")；
+ * 4. Stage 3 最终答案流式排版呈现 ("52 3")，题号严格保留原题实际编号；
+ * 5. 25s 超时重试 + 自动 Fallback 模型 + 顶部 1s 提示；
+ * 6. 暗色电量 + 隐藏右上角设置图标 (隐形触摸依然有效)。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -377,7 +378,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun solve(bytes: ByteArray) {
         state = 2
-        // 进入 Stage 1: 题目提取中 (显示 Step 1)
         updateBatteryStepDisplay(step = 1)
         previewCard.visibility = View.GONE
         
@@ -386,8 +386,9 @@ class MainActivity : AppCompatActivity() {
             cameraHelper = null
         }
 
-        status.text = "正在提取题目..."
-        status.visibility = View.VISIBLE
+        // 彻底移除任何文字铺垫提示，直接保持纯净空白等待流式内容
+        status.visibility = View.GONE
+        status.text = ""
         contentContainer.visibility = View.VISIBLE
         contentContainer.removeAllViews()
 
@@ -396,7 +397,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
             setLineSpacing(4f, 1.2f)
             setBackgroundColor(Color.BLACK)
-            text = "正在解析题目..."
+            text = ""
         }
         contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
 
@@ -408,13 +409,14 @@ class MainActivity : AppCompatActivity() {
                     onStage1QuestionsUpdate = { qs ->
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 1)
-                            status.text = "已提取 ${qs.size} 道题目"
+                            status.visibility = View.GONE
                             stageTextView.text = qs.joinToString("\n\n") { "${it.id}. ${it.content.trim()}" }
                         }
                     },
                     onStage2DoubleColumnUpdate = { ss, topStatusText ->
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 2)
+                            status.visibility = View.VISIBLE
                             status.text = topStatusText
                             stageTextView.text = ss.sortedBy { it.originalOrder }.chunked(2).joinToString("\n") { row -> row.joinToString("  ") { "[${it.id}][T:${it.toolCount}]${if (it.isDone) "√" else "..."}" } }
                         }
