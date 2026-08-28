@@ -7,38 +7,39 @@
     <script src="file:///android_asset/katex/katex.min.js"></script>
     <script src="file:///android_asset/katex/auto-render.min.js"></script>
     <style>
-        /* 仅顶层背景设为纯黑，绝不使用 * 覆盖，否则 KaTeX 分数线(frac-line)和边框会被抹黑隐藏！ */
         html, body {
             margin: 0;
             padding: 0;
             background-color: #000000;
             color: #00ff66;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-            font-size: 14px;
-            line-height: 1.85;
-            padding: 6px 8px 160px 8px;
+            font-size: 13.5px;
+            /* 紧凑适中的行高，消除多余空白 */
+            line-height: 1.5;
+            padding: 2px 4px 140px 4px;
             overflow-x: hidden;
-            overflow-y: scroll;
+            overflow-y: auto;
             word-wrap: break-word;
             word-break: break-word;
-            white-space: pre-wrap;
             box-sizing: border-box;
         }
 
-        /* 统一绿色高亮，允许 KaTeX 分数线正常绘制边框颜色 */
         p, div, span, li, h1, h2, h3, table, td, th {
             color: #00ff66;
         }
 
-        /* 核心修复：KaTeX 公式分数线与边框显式赋予荧光绿颜色与 1.5px 粗细，彻底杜绝虚线/消失/遮挡 */
+        .para {
+            margin-bottom: 4px;
+            line-height: 1.5;
+        }
+
+        /* 核心公式修复：紧凑排版，显式加粗荧光绿分数线与边框 */
         .katex {
             color: #00ff66 !important;
-            font-size: 1.12em;
-            line-height: 1.6 !important;
+            font-size: 1.08em;
+            line-height: 1.35 !important;
             white-space: normal !important;
             word-wrap: break-word !important;
-            padding-top: 4px !important;
-            padding-bottom: 4px !important;
             display: inline-block;
         }
 
@@ -50,7 +51,7 @@
             overflow-y: visible !important;
         }
 
-        /* 修复分数线 (frac-line) 颜色与可见性 */
+        /* 分数线 (frac-line) */
         .katex .frac-line, .katex-display .frac-line {
             border-bottom-color: #00ff66 !important;
             border-bottom-width: 1.5px !important;
@@ -59,21 +60,21 @@
             background-color: #00ff66 !important;
         }
 
-        /* 修复根号与开方符号 */
+        /* 根号与开方符号 */
         .katex .sqrt-line {
             border-top-color: #00ff66 !important;
             border-top-width: 1.5px !important;
             background-color: #00ff66 !important;
         }
 
-        /* 修复矩阵边框与括号 */
         .katex .mord, .katex .mbin, .katex .mrel, .katex .mopen, .katex .mclose, .katex .mpunct, .katex .minner, .katex .mop {
             color: #00ff66 !important;
         }
 
+        /* 紧凑块级公式：上下仅 0.25em 间距，彻底消除大间隙 */
         .katex-display {
-            margin: 0.6em 0 !important;
-            padding: 6px 0 !important;
+            margin: 0.25em 0 !important;
+            padding: 2px 0 !important;
             max-width: 100% !important;
             overflow-x: auto !important;
             overflow-y: visible !important;
@@ -89,7 +90,7 @@
         .bold-title {
             font-weight: bold;
             color: #00ff66;
-            margin-top: 6px;
+            margin-top: 4px;
             margin-bottom: 2px;
             display: inline-block;
         }
@@ -102,17 +103,26 @@
         var isAutoScrolling = false;
         var resumeAutoScrollTimer = null;
 
-        function parseSimpleMarkdown(md) {
+        // 紧凑 Markdown 解析器：连续空行合并，消除空隙过大
+        function parseCompactMarkdown(md) {
             if (!md) return '';
             var lines = md.split('\n');
             var html = [];
+            var lastWasEmpty = false;
             for (var i = 0; i < lines.length; i++) {
-                var line = lines[i];
+                var line = lines[i].trim();
+                if (!line) {
+                    if (!lastWasEmpty) {
+                        lastWasEmpty = true;
+                    }
+                    continue;
+                }
+                lastWasEmpty = false;
                 line = line.replace(/\*\*(.*?)\*\*/g, '<span class="bold-title">$1</span>');
                 line = line.replace(/\*(.*?)\*/g, '<em>$1</em>');
-                html.push(line);
+                html.push('<div class="para">' + line + '</div>');
             }
-            return html.join('<br>');
+            return html.join('');
         }
 
         function renderMarkdown(md) {
@@ -122,7 +132,7 @@
                 return;
             }
             try {
-                container.innerHTML = parseSimpleMarkdown(md);
+                container.innerHTML = parseCompactMarkdown(md);
                 if (typeof renderMathInElement === 'function') {
                     renderMathInElement(container, {
                         delimiters: [
@@ -146,11 +156,11 @@
                 clearInterval(autoScrollTimer);
                 autoScrollTimer = null;
             }
-            // 延时 4 秒首屏静止等待，随后以 0.4px/50ms 极缓微步滚动
+            // 延时 3 秒首屏静止，随后以 0.4px/50ms 极稳滚动
             setTimeout(function() {
                 var scrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
                 var clientHeight = window.innerHeight;
-                if (scrollHeight > clientHeight + 30) {
+                if (scrollHeight > clientHeight + 20) {
                     isAutoScrolling = true;
                     autoScrollTimer = setInterval(function() {
                         if (!isAutoScrolling) return;
@@ -165,10 +175,10 @@
                         }
                     }, 50);
                 }
-            }, 4000);
+            }, 3000);
         }
 
-        // 高度精准的手动滚动接口
+        // 强力高精度滚动接口
         window.manualScroll = function(deltaY) {
             isAutoScrolling = false;
             if (resumeAutoScrollTimer) {

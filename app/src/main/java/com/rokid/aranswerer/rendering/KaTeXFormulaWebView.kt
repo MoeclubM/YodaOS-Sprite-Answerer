@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.util.AttributeSet
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -15,7 +16,8 @@ import android.webkit.WebViewClient
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
  * 1. 采用本地 assets 离线加载；
  * 2. 修复分数线 (frac-line)、积分上下标、大括号的完整高亮显示；
- * 3. 增强滑动滚动响应：调用 JS 的 window.scrollBy 与原生 View.scrollBy。
+ * 3. 紧凑排版，合并段落空行，消除大间隙；
+ * 4. 强力触摸与物理滚动：重写 onTouchEvent 并提供 JS/原生平滑滚动。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,

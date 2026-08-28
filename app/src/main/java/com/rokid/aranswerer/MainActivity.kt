@@ -42,10 +42,10 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 修复分数线 (frac-line) 与根号在黑底下的可见性，杜绝高斯定理/积分分式上下截断与虚线遮挡；
- * 2. 答案呈现状态下 (state=3) 直接将 Touch 事件无缝透传给 WebView 与手势探测器，确保手指拖拽与上滑/下滑 100% 滚动；
- * 3. 自动滚动速度调整为极缓 0.4px/50ms，停留 4s 后开始，让步手动滑动 6s；
- * 4. 25s 超时重试 + 失败自动 fallback 下一个模型并在顶部提示 1s。
+ * 1. 紧凑排版：合并段落连续换行，消除公式与文字之间的巨大空白间距；
+ * 2. 分数线与开方线显式加粗绘制荧光绿，消除断线；
+ * 3. 答案态下 (state=3) 拦截并调度所有触控与按键手势，实现 100% 顺畅上下滚动翻页；
+ * 4. 自动滚动速度调优为极缓微步向下推移。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -150,11 +150,11 @@ class MainActivity : AppCompatActivity() {
         // 3. 触控手势探测器
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy < -100 || vx > 100) {
+                if (vy < -80 || vx > 80) {
                     handleSwipeUp()
                     return true
                 }
-                if (vy > 100 || vx < -100) {
+                if (vy > 80 || vx < -80) {
                     handleSwipeDown()
                     return true
                 }
@@ -163,7 +163,6 @@ class MainActivity : AppCompatActivity() {
 
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
                 if (state == 3) {
-                    // 答案态手指直接滑动拖拽滚动
                     katexWebView?.smoothScroll(distanceY.toInt())
                     return true
                 }
@@ -225,7 +224,7 @@ class MainActivity : AppCompatActivity() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            // 答案态上滑 -> 向上滚动 160px
+            // 答案态上滑 -> 向上平滑滚动 160px
             katexWebView?.smoothScroll(-160)
         }
     }
@@ -236,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            // 答案态下滑 -> 向下滚动 160px
+            // 答案态下滑 -> 向下平滑滚动 160px
             katexWebView?.smoothScroll(160)
         }
     }
@@ -297,7 +296,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 答案态下将触摸事件优先喂入手势探测器
+        // 手势探测器处理
         gestureDetector.onTouchEvent(ev)
 
         when (ev.action) {
@@ -318,7 +317,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 答案态下如果 WebView 存在，同时将 touch 事件分发给 WebView，支持双通道触控
+        // 答案态下如果 WebView 存在，同时将 touch 事件分发给 WebView
         if (state == 3 && katexWebView != null) {
             katexWebView?.onTouchEvent(ev)
         }
