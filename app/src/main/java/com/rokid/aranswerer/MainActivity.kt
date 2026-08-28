@@ -42,9 +42,10 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 修复 KaTeX 分数线太粗太靠下的问题：遵循官方 0.04em 纤细居中标准，荧光绿高亮且绝无断线；
- * 2. 彻底解决触控板无法滚动的问题：拦截 Rokid 硬件滑动序列 (22->20 / 21->19) 与 Touch 拖拽手势，双向平滑滚动；
- * 3. 极缓平滑自动向下滚动 (0.35px/50ms)，停留 3.5s 后开始，用户手动滚动立即让步 6s。
+ * 1. 严格对齐切换模型/进入拍摄的滑动识别通道：无论是触控板手势、外接戒指还是硬件按键，在答案态 (state=3) 下统一触发向上/向下平滑滚动；
+ * 2. 答案态直接打通原生 pageUp/pageDown、scrollBy 与 JS scrollTop 三通道滚动调度；
+ * 3. 完美保留 0.04em 标准纤细居中分数线；
+ * 4. 极缓自动平滑微步向下推移 (0.35px/50ms)。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -146,7 +147,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器
+        // 3. 触控手势探测器：严格对齐切换模型/进入拍摄的滑动识别标准
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (vy < -60 || vx > 60) {
@@ -180,18 +181,18 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器 (拦截 Rokid 硬件序列 22->20 / 21->19 与广播)
+        // 4. 硬件输入分发器 (严格对齐切换模型/进入拍摄的硬件滑动捕获)
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
                 if (state == 0) enterPreview()
             },
             onSwipeUp = {
-                Log.d("ARAnswerer", "Hardware Swipe Up received: state=$state")
+                Log.d("ARAnswerer", "Hardware Swipe Up triggered: state=$state")
                 handleSwipeUp()
             },
             onSwipeDown = {
-                Log.d("ARAnswerer", "Hardware Swipe Down received: state=$state")
+                Log.d("ARAnswerer", "Hardware Swipe Down triggered: state=$state")
                 handleSwipeDown()
             }
         ).also { it.start() }
@@ -221,21 +222,29 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed(hideModelStatusRunnable, 1000)
     }
 
+    /**
+     * 上滑操作：休眠态切模型，答案态向上滚动翻页
+     */
     private fun handleSwipeUp() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            katexWebView?.smoothScroll(-150)
+            Log.d("ARAnswerer", "Executing Answer Scroll Up (-180px)")
+            katexWebView?.smoothScroll(-180)
         }
     }
 
+    /**
+     * 下滑操作：休眠态进入拍摄，取景态提前抓拍，答案态向下滚动翻页
+     */
     private fun handleSwipeDown() {
         if (state == 0) {
             enterPreview()
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            katexWebView?.smoothScroll(150)
+            Log.d("ARAnswerer", "Executing Answer Scroll Down (+180px)")
+            katexWebView?.smoothScroll(180)
         }
     }
 

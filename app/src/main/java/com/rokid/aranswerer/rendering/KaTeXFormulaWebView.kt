@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.util.AttributeSet
 import android.util.Log
-import android.view.MotionEvent
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -15,9 +14,8 @@ import android.webkit.WebViewClient
 /**
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
  * 1. 采用本地 assets 离线加载；
- * 2. 修复分数线 (frac-line)、积分上下标、大括号的完整高亮显示；
- * 3. 紧凑排版，合并段落空行，消除大间隙；
- * 4. 强力触摸与物理滚动：重写 onTouchEvent 并提供 JS/原生平滑滚动。
+ * 2. 增强多通道硬件与 JS 滚动，直接驱动 pageUp / pageDown / scrollBy / JS scrollTop；
+ * 3. 完美兼容标准 LaTeX 纤细分数线与公式排版。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,
@@ -83,12 +81,22 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
     }
 
     /**
-     * 手动平滑滚动调度：直接驱动 WebView 内部滚动
+     * 强力多通道滚动调度：同时触发 pageUp/pageDown、原生 scrollBy 与 JS manualScroll
      */
     fun smoothScroll(deltaY: Int) {
         post {
+            // 1. 调用 JS 内部的 manualScroll 与 window.scrollBy
             evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); } else { window.scrollBy(0, $deltaY); }", null)
+            
+            // 2. 原生 WebView 滚动
             scrollBy(0, deltaY)
+            
+            // 3. 原生 pageUp / pageDown 辅助触发
+            if (deltaY > 0) {
+                pageDown(false)
+            } else if (deltaY < 0) {
+                pageUp(false)
+            }
         }
     }
 }
