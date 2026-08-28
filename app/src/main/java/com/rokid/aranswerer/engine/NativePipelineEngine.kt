@@ -42,6 +42,7 @@ data class SolvedQuestion(
 
 data class StreamChatResult(
     val content: String,
+    val reasoning: String = "",
     val toolCalls: List<ToolCallInfo> = emptyList()
 )
 
@@ -168,18 +169,19 @@ object NativePipelineEngine {
             }
 
             try {
+                val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
                 val reqJson = JSONObject().apply {
                     put("model", provider.model)
                     put("stream", true)
                     put("messages", messages)
-                    if (tools != null && !provider.model.contains("deepseek", ignoreCase = true)) {
+                    if (tools != null && !isDeepSeek) {
                         put("tools", tools)
                     }
                 }
 
                 val body = reqJson.toString().toRequestBody("application/json".toMediaType())
-                val url = if (provider.apiBase.endsWith("/v1")) {
-                    "${provider.apiBase}/chat/completions"
+                val url = if (provider.apiBase.endsWith("/v1") || isDeepSeek) {
+                    if (provider.apiBase.endsWith("/v1")) "${provider.apiBase}/chat/completions" else "${provider.apiBase.trimEnd('/')}/chat/completions"
                 } else {
                     "${provider.apiBase.trimEnd('/')}/v1/chat/completions"
                 }
@@ -196,6 +198,7 @@ object NativePipelineEngine {
                 val source = resp.body?.byteStream() ?: throw RuntimeException("Empty response body")
                 val reader = BufferedReader(InputStreamReader(source))
                 val contentAcc = StringBuilder()
+                val reasoningAcc = StringBuilder()
                 val toolCallMap = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
 
                 var line: String? = reader.readLine()
@@ -207,8 +210,13 @@ object NativePipelineEngine {
                             val choice = chunkJson.optJSONArray("choices")?.optJSONObject(0)
                             val delta = choice?.optJSONObject("delta")
                             
+                            val reasoningDelta = delta?.optString("reasoning_content") ?: ""
+                            if (reasoningDelta.isNotEmpty() && reasoningDelta != "null") {
+                                reasoningAcc.append(reasoningDelta)
+                            }
+
                             val textDelta = delta?.optString("content") ?: ""
-                            if (textDelta.isNotEmpty()) {
+                            if (textDelta.isNotEmpty() && textDelta != "null") {
                                 contentAcc.append(textDelta)
                                 onChunk?.invoke(contentAcc.toString())
                             }
@@ -234,10 +242,21 @@ object NativePipelineEngine {
                     line = reader.readLine()
                 }
 
+                val finalContent = contentAcc.toString().trim()
+                val finalReasoning = reasoningAcc.toString().trim()
+
+                val resultText = if (finalContent.isNotEmpty()) {
+                    finalContent
+                } else if (finalReasoning.isNotEmpty()) {
+                    finalReasoning
+                } else {
+                    ""
+                }
+
                 val finalToolCalls = toolCallMap.values.map {
                     ToolCallInfo(it.first, it.second, it.third.toString())
                 }
-                return@withContext StreamChatResult(contentAcc.toString().trim(), finalToolCalls)
+                return@withContext StreamChatResult(resultText, finalReasoning, finalToolCalls)
             } catch (e: Exception) {
                 Log.w("NativePipelineEngine", "Provider ${provider.model} error", e)
                 lastErr = e
@@ -246,9 +265,6 @@ object NativePipelineEngine {
         throw lastErr ?: RuntimeException("未配置有效 API Key 或请求失败，请在设置中输入 Key")
     }
 
-    /**
-     * 简单模式 (Easy-Answerer): 单轮直接将图片送入多模态大模型，流式秒出所有答案
-     */
     suspend fun runEasyModePipeline(
         context: Context,
         jpegBytes: ByteArray,
@@ -286,14 +302,11 @@ object NativePipelineEngine {
         }
 
         if (isStrictNoQuestion(result.content)) {
-            return@withContext "未识别到题目"
+            return@withContext "未识别"
         }
         return@withContext result.content
     }
 
-    /**
-     * 三阶段 Agent 模式 (Agent-Answerer): 拆题 -> 并发多轮 ReAct -> AR 提炼
-     */
     suspend fun runThreeStagePipeline(
         context: Context,
         jpegBytes: ByteArray,
@@ -340,7 +353,7 @@ object NativePipelineEngine {
 
         if (questions.isEmpty()) {
             if (isStrictNoQuestion(stage1Result.content)) {
-                return@withContext "未识别到题目"
+                return@withContext "未识别"
             }
             return@withContext streamMessages(context, JSONArray().apply {
                 put(JSONObject().apply { put("role", "system"); put("content", STAGE2_PROMPT) })
@@ -461,6 +474,9 @@ object NativePipelineEngine {
                 val assistantMsg = JSONObject().apply {
                     put("role", "assistant")
                     put("content", chatResult.content.ifEmpty { null })
+                    if (chatResult.reasoning.isNotEmpty()) {
+                        put("reasoning_content", chatResult.reasoning)
+                    }
                     put("tool_calls", JSONArray().apply {
                         for (tc in chatResult.toolCalls) {
                             put(JSONObject().apply {
@@ -523,7 +539,7 @@ object NativePipelineEngine {
         if (trimmed == "NO_QUESTION" || trimmed == "NOQUESTION") return true
         if (trimmed.startsWith("NO_QUESTION") && trimmed.length < 30) return true
         val compact = trimmed.replace("\\s+".toRegex(), "")
-        return compact == "未识别到题目" || compact == "没有找到题目" || compact == "未识别到问题" || compact == "没有题目"
+        return compact == "未识别到题目" || compact == "没有找到题目" || compact == "未识别到问题" || compact == "没有题目" || compact == "未识别"
     }
 
     private fun parseQuestions(raw: String): List<ExtractedQuestion> {

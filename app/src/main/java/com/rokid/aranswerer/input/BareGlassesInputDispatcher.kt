@@ -8,18 +8,17 @@ import android.view.KeyEvent
 import androidx.core.content.ContextCompat
 
 /**
- * 完整对齐 Rokid-Assist 的眼镜系统级输入与双指广播拦截器
- * 支持：
- * 1. 触控板长按 / 镜腿长按 -> 拍照
- * 2. 双指长按广播 ACTION_SETTINGS_KEY / KEYCODE_SETTINGS -> 打开设置
- * 3. 双指双击 / 双指滑动 -> 扩展手势
+ * 完整对齐本项目的输入分发器
+ * 1. 触控板轻点 (KEYCODE_DPAD_CENTER / KEYCODE_ENTER) 仅在答案态 (state=3) 下用于退出休眠，休眠态 (state=0) 下绝对不触发拍照！
+ * 2. 触控板进入拍照唯一途径：触控板长按 400ms (ACTION_SPRITE_BUTTON_LONG_PRESS / ACTION_AI_START / 触摸 400ms)；
+ * 3. 蓝牙智能戒指 (R08_5703 专属媒体键 KEY_PLAYPAUSE / HEADSETHOOK / 0x000c00cd) 在休眠态下点击进入拍照！
  */
 class BareGlassesInputDispatcher(
     private val context: Context,
     private val onTriggerCapture: () -> Unit,
-    private val onSingleTapAction: () -> Unit,
-    private val onScrollAction: (Int) -> Unit,
-    private val onOpenSettings: () -> Unit
+    private val onRingClick: () -> Unit,
+    private val onTouchpadSingleTap: () -> Unit,
+    private val onScrollAction: (Int) -> Unit
 ) {
     private var lastKeyCode = -1
     private var lastEventTime = 0L
@@ -31,7 +30,6 @@ class BareGlassesInputDispatcher(
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent == null) return
 
-            // 终止广播继续向下传递
             if (isOrderedBroadcast) {
                 try {
                     abortBroadcast()
@@ -40,20 +38,12 @@ class BareGlassesInputDispatcher(
 
             val now = System.currentTimeMillis()
             when (intent.action) {
-                // 1. 双指长按广播 (Rokid 系统设置键) -> 拦截并打开 AR 设置面板
-                "com.android.action.ACTION_SETTINGS_KEY" -> {
-                    onOpenSettings()
-                }
-                // 2. 双指双击
-                "com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP" -> {
-                    onOpenSettings()
-                }
-                // 3. 触控板长按 / 镜腿长按进入拍照
+                // 触控板长按 / 镜腿长按进入拍照
                 "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS",
                 "com.android.action.ACTION_AI_START" -> {
                     onTriggerCapture()
                 }
-                // 4. 双指滑动 (400ms 消抖)
+                // 双指滑动
                 "com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD" -> {
                     if (now - lastHardwareSwipeTime > DEBOUNCE_INTERVAL_MS) {
                         lastHardwareSwipeTime = now
@@ -73,11 +63,8 @@ class BareGlassesInputDispatcher(
     fun start() {
         val filter = IntentFilter().apply {
             priority = IntentFilter.SYSTEM_HIGH_PRIORITY
-            addAction("com.android.action.ACTION_SPRITE_BUTTON_CLICK")
             addAction("com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS")
             addAction("com.android.action.ACTION_AI_START")
-            addAction("com.android.action.ACTION_SETTINGS_KEY")
-            addAction("com.android.action.ACTION_TWO_FINGER_DOUBLE_TAP")
             addAction("com.android.action.ACTION_TWO_FINGER_SWIPE_FORWARD")
             addAction("com.android.action.ACTION_TWO_FINGER_SWIPE_BACK")
         }
@@ -97,9 +84,6 @@ class BareGlassesInputDispatcher(
         } catch (_: Throwable) {}
     }
 
-    /**
-     * 处理 Activity 的 dispatchKeyEvent
-     */
     fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
             val eventTime = event.eventTime
@@ -110,13 +94,32 @@ class BareGlassesInputDispatcher(
 
             val now = System.currentTimeMillis()
 
-            // 1. 双指长按物理键 KEYCODE_SETTINGS (或双指点击 KEYCODE_NOTIFICATION: 83)
-            if (keyCode == KeyEvent.KEYCODE_SETTINGS || keyCode == KeyEvent.KEYCODE_NOTIFICATION) {
-                onOpenSettings()
+            // 1. 蓝牙智能戒指专有硬件键 (KEY_PLAYPAUSE / KEYCODE_HEADSETHOOK / 0x000c00cd / 游戏手柄键)
+            // 这一类事件是真实的外部按键，允许在休眠态下一键唤醒拍照
+            if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_PLAY ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE ||
+                keyCode == KeyEvent.KEYCODE_MEDIA_STOP ||
+                event.scanCode == 0x000c00cd ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_A ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_SELECT ||
+                keyCode == KeyEvent.KEYCODE_CAMERA ||
+                keyCode == KeyEvent.KEYCODE_SPACE) {
+                onRingClick()
                 return true
             }
 
-            // 2. 滑动序列检测
+            // 2. 眼镜触控板硬件单击 (DPAD_CENTER / ENTER)
+            // 关键区别：触控板轻点绝不进入拍照，仅在查看答案 (state=3) 时用于退出休眠！
+            if (keyCode == KeyEvent.KEYCODE_ENTER ||
+                keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
+                onTouchpadSingleTap()
+                return true
+            }
+
+            // 3. 滑动序列检测 -> 切换模型 / 翻页
             if ((prev == KeyEvent.KEYCODE_DPAD_RIGHT && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) ||
                 keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_PAGE_DOWN || keyCode == 183) {
                 if (now - lastHardwareSwipeTime > DEBOUNCE_INTERVAL_MS) {
@@ -135,15 +138,9 @@ class BareGlassesInputDispatcher(
                 return true
             }
 
-            // 3. 长按物理按键 KEYCODE_PROG_BLUE
+            // 4. 镜腿物理长按键 KEYCODE_PROG_BLUE
             if (keyCode == KeyEvent.KEYCODE_PROG_BLUE || event.isLongPress) {
                 onTriggerCapture()
-                return true
-            }
-
-            // 4. 单击
-            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER || keyCode == KeyEvent.KEYCODE_DPAD_CENTER) {
-                onSingleTapAction()
                 return true
             }
         }

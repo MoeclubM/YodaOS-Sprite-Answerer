@@ -21,8 +21,9 @@ import java.nio.ByteBuffer
 
 /**
  * 专为 Rokid Glasses 裸机定制的纯原生 Camera2 硬件驱动器
- * 1. 采用正确的 AspectRatio Transform 变换矩阵，彻底解决上下拉伸/压缩形变；
- * 2. 独立背景线程执行抓帧与生命周期解绑，拍照成功后安全释放，绝不引发死锁或闪退。
+ * 1. 自动选择硬件支持的最佳高清分辨率 (优先 1920x1080 / 1280x960)；
+ * 2. 注入等比 CenterCrop 变换矩阵；
+ * 3. 独立后台线程抓帧，高稳定性无死锁。
  */
 class NativeCamera2Helper(
     private val context: Context,
@@ -40,7 +41,7 @@ class NativeCamera2Helper(
 
     private var cameraId = "0"
     private var previewSize = Size(640, 480)
-    private var captureSize = Size(1280, 960)
+    private var captureSize = Size(1920, 1080) // 提升为高清拍摄分辨率
 
     fun start() {
         startBackgroundThread()
@@ -110,16 +111,19 @@ class NativeCamera2Helper(
             if (map != null) {
                 val outputSizes = map.getOutputSizes(SurfaceTexture::class.java)
                 if (!outputSizes.isNullOrEmpty()) {
-                    // 挑选最接近 4:3 / 16:9 标准比例的预览尺寸
                     previewSize = outputSizes.firstOrNull { it.width == 640 && it.height == 480 } ?: outputSizes[0]
                 }
                 val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)
                 if (!jpegSizes.isNullOrEmpty()) {
-                    captureSize = jpegSizes.firstOrNull { it.width == 1280 && it.height == 960 } ?: jpegSizes[0]
+                    // 挑选设备支持的最佳高清拍摄分辨率 (优先选择 1920x1080 -> 1280x960 -> 1280x720 -> 最大尺寸)
+                    captureSize = jpegSizes.firstOrNull { it.width == 1920 && it.height == 1080 }
+                        ?: jpegSizes.firstOrNull { it.width == 1280 && it.height == 960 }
+                        ?: jpegSizes.firstOrNull { it.width == 1280 && it.height == 720 }
+                        ?: jpegSizes[0]
                 }
+                Log.d("NativeCamera2", "Selected Capture Size: ${captureSize.width}x${captureSize.height}, Preview Size: ${previewSize.width}x${previewSize.height}")
             }
 
-            // 初始化 ImageReader
             imageReader = ImageReader.newInstance(captureSize.width, captureSize.height, ImageFormat.JPEG, 2).apply {
                 setOnImageAvailableListener({ reader ->
                     try {
@@ -197,15 +201,10 @@ class NativeCamera2Helper(
         }
     }
 
-    /**
-     * 关键：为 TextureView 配置等比例居中裁剪 Matrix 变换，彻底消除上下压缩/拉伸形变
-     */
     private fun configureTransform(viewWidth: Int, viewHeight: Int) {
         if (viewWidth == 0 || viewHeight == 0) return
         val matrix = Matrix()
         val viewRect = RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
-        
-        // 摄像头传感器物理尺寸 (通常横向 width > height)
         val bufferRect = RectF(0f, 0f, previewSize.height.toFloat(), previewSize.width.toFloat())
         val centerX = viewRect.centerX()
         val centerY = viewRect.centerY()
@@ -213,7 +212,6 @@ class NativeCamera2Helper(
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
 
-        // 等比居中缩放
         val scale = Math.max(
             viewHeight.toFloat() / previewSize.height,
             viewWidth.toFloat() / previewSize.width

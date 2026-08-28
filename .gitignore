@@ -17,6 +17,7 @@ out/
 .env.local
 .env.*
 *LocalSecrets.kt
+*LocalDevSecrets.kt
 AppSecrets.local.kt
 AppConfig.local.kt
 

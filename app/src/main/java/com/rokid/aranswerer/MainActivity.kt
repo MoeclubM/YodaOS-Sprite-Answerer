@@ -44,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
     private lateinit var battery: TextView
+    private lateinit var settingsIcon: TextView
     private lateinit var status: TextView
     private lateinit var contentContainer: FrameLayout
     private lateinit var previewCard: FrameLayout
@@ -53,7 +54,6 @@ class MainActivity : AppCompatActivity() {
     private var cameraHelper: NativeCamera2Helper? = null
 
     private var state = 0 // 0 sleep, 1 preview, 2 solving, 3 answer
-    private var isEasyMode = false // 是否为单轮秒出简单模式 (双指长按进入)
     private var input: BareGlassesInputDispatcher? = null
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var gestureDetector: GestureDetector
@@ -67,18 +67,11 @@ class MainActivity : AppCompatActivity() {
     private var lastModelSwitchTime = 0L
     private val MODEL_SWITCH_DEBOUNCE_MS = 400L
 
+    // 触控板单指稳定长按达到 400ms 才允许唤醒进入拍摄
     private val longPressToCaptureRunnable = Runnable {
         if (state == 0) {
-            // 单指长按：进入专业三阶段 Agent 模式
-            enterPreview(easyMode = false)
-        }
-    }
-
-    private val twoFingerLongPressRunnable = Runnable {
-        if (state == 0) {
-            // 双指长按：进入单轮秒出简单模式 (Easy-Answerer)
-            Log.d("ARAnswerer", "Two-finger long press -> enterPreview Easy Mode")
-            enterPreview(easyMode = true)
+            Log.d("ARAnswerer", "Touchpad 400ms LongPress confirmed -> enterPreview")
+            enterPreview()
         }
     }
 
@@ -91,7 +84,11 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = Color.BLACK
         window.attributes = window.attributes.apply { screenBrightness = 0.25f }
 
-        root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        root = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = false
+            isFocusable = false
+        }
         safeContent = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         root.addView(safeContent, FrameLayout.LayoutParams(-1, -1).apply { bottomMargin = 214 })
 
@@ -100,7 +97,7 @@ class MainActivity : AppCompatActivity() {
         val previewH = (180 * density).toInt()
 
         previewCard = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
-        textureView = TextureView(this)
+        textureView = TextureView(this).apply { alpha = 0.35f }
         previewCard.addView(textureView, FrameLayout.LayoutParams(-1, -1))
         safeContent.addView(previewCard, FrameLayout.LayoutParams(previewW, previewH).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = (45 * density).toInt() })
 
@@ -114,23 +111,35 @@ class MainActivity : AppCompatActivity() {
             rightMargin = (10 * density).toInt()
         })
 
-        // 1. 电量左上角常驻：点击电量区域打开设置面板
+        // 1. 左上角：纯电量展示 (无焦点、无点击，绝不进设置)
         battery = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 14f
-            text = "${BatteryHelper.level(this@MainActivity)}%"
+            text = "${BatteryHelper.level(this@MainActivity)}"
             setPadding(16, 12, 24, 16)
-            isClickable = true
+            isClickable = false
             isFocusable = false
-            setOnClickListener {
-                openSettingsDialog()
-            }
+            isFocusableInTouchMode = false
         }
         safeContent.addView(battery, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
         })
+
+        // 2. 右上角：独立的设置齿轮 ⚙ (仅真实手指触摸点击打开设置)
+        settingsIcon = TextView(this).apply {
+            text = "⚙"
+            setTextColor(0x8800ff66.toInt())
+            textSize = 16f
+            setPadding(24, 12, 20, 16)
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
+        safeContent.addView(settingsIcon, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.TOP or Gravity.END
+        })
         
-        // 2. 状态栏：极简排版
+        // 3. 状态栏
         status = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 13f
@@ -140,7 +149,7 @@ class MainActivity : AppCompatActivity() {
         }
         safeContent.addView(status, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.TOP or Gravity.START })
 
-        // 触控手势探测器
+        // 4. 触控手势探测器：滑动切模型、双击返回
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (state == 0) {
@@ -152,7 +161,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                if (state == 1 || state == 2 || state == 3) {
+                if (state != 0) {
                     goSleep()
                     return true
                 }
@@ -169,30 +178,38 @@ class MainActivity : AppCompatActivity() {
         })
 
         setContentView(root)
-        root.requestFocus()
         goSleep()
 
-        // 输入分发器：支持单指长按、双指长按简单模式、滑动切模型
+        // 5. 硬件按键分发器：严格区分外接戒指与触控板轻点
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
-                // 单指长按广播 -> 触发专业三阶段 Agent 拍摄
-                if (state == 0) enterPreview(easyMode = false)
+                // 触控板长按广播 -> 触发拍照
+                if (state == 0) enterPreview()
             },
-            onSingleTapAction = {
-                if (state == 3) goSleep()
+            onRingClick = {
+                // 蓝牙戒指专属按键 -> 休眠态唤醒拍照，取景态提前抓拍，答案态回休眠
+                Log.d("ARAnswerer", "Ring Click Action: state=$state")
+                if (state == 0) {
+                    enterPreview()
+                } else if (state == 1) {
+                    triggerHardwareCapture()
+                } else if (state == 3) {
+                    goSleep()
+                }
+            },
+            onTouchpadSingleTap = {
+                // 触控板物理轻点 (DPAD_CENTER) -> 仅在答案态用于退出休眠，休眠态绝对不触发拍照！
+                Log.d("ARAnswerer", "Touchpad SingleTap Action: state=$state")
+                if (state == 3) {
+                    goSleep()
+                }
             },
             onScrollAction = { deltaY ->
                 if (state == 0) {
                     switchModel(if (deltaY > 0) 1 else -1)
                 } else if (state == 3) {
                     katexWebView?.scrollBy(0, deltaY)
-                }
-            },
-            onOpenSettings = {
-                // 双指长按广播 (ACTION_SETTINGS_KEY) -> 触发单轮简单模式 (Easy-Answerer)
-                if (state == 0) {
-                    runOnUiThread { enterPreview(easyMode = true) }
                 }
             }
         ).also { it.start() }
@@ -249,28 +266,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
-        val batteryTouchAreaWidth = 140 * density
-        val batteryTouchAreaHeight = 60 * density
+        val screenW = resources.displayMetrics.widthPixels.toFloat()
+        val settingsTouchAreaWidth = 80 * density
+        val settingsTouchAreaHeight = 60 * density
 
-        // 点击电量区域 -> 打开设置面板
-        if (ev.x <= batteryTouchAreaWidth && ev.y <= batteryTouchAreaHeight) {
+        // 仅在手指点击右上角 ⚙ 设置图标区域时打开设置面板
+        if (ev.x >= (screenW - settingsTouchAreaWidth) && ev.y <= settingsTouchAreaHeight) {
             if (ev.action == MotionEvent.ACTION_UP) {
                 handler.removeCallbacks(longPressToCaptureRunnable)
-                handler.removeCallbacks(twoFingerLongPressRunnable)
                 openSettingsDialog()
                 return true
             } else if (ev.action == MotionEvent.ACTION_DOWN) {
-                return true
-            }
-        }
-
-        // 双指长按手势检测 -> 进入简单模式 (Easy-Answerer)
-        if (ev.pointerCount >= 2) {
-            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-                handler.removeCallbacks(longPressToCaptureRunnable)
-                if (state == 0) {
-                    handler.postDelayed(twoFingerLongPressRunnable, 400)
-                }
                 return true
             }
         }
@@ -281,19 +287,18 @@ class MainActivity : AppCompatActivity() {
                 startX = ev.x
                 startY = ev.y
                 touchDownTime = System.currentTimeMillis()
-                if (state == 0 && ev.pointerCount == 1) {
+                // 触控板单指按住达到 400ms 才触发拍照 (快速点按抬起立即 cancel，绝对不进拍照)
+                if (state == 0) {
                     handler.postDelayed(longPressToCaptureRunnable, 400)
                 }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (state == 0 && (abs(ev.x - startX) > 25 || abs(ev.y - startY) > 25)) {
                     handler.removeCallbacks(longPressToCaptureRunnable)
-                    handler.removeCallbacks(twoFingerLongPressRunnable)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 handler.removeCallbacks(longPressToCaptureRunnable)
-                handler.removeCallbacks(twoFingerLongPressRunnable)
             }
         }
         return true
@@ -320,19 +325,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 进入拍摄取景模式 (easyMode=true 为简单秒出模式，easyMode=false 为三阶段 Agent 模式)
+     * 进入拍摄取景模式
      */
-    private fun enterPreview(easyMode: Boolean) {
+    private fun enterPreview() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
             return
         }
         state = 1
-        isEasyMode = easyMode
         contentContainer.visibility = View.GONE
         previewCard.visibility = View.VISIBLE
         status.visibility = View.VISIBLE
-        status.text = if (easyMode) "简单秒出模式 (取景中)..." else "Agent 深度模式 (取景中)..."
+        status.text = "取景中..."
 
         cameraHelper?.stop()
         cameraHelper = NativeCamera2Helper(
@@ -340,7 +344,7 @@ class MainActivity : AppCompatActivity() {
             textureView = textureView,
             onFrameCaptured = { bytes ->
                 runOnUiThread {
-                    if (bytes.isNotEmpty()) solve(bytes, isEasyMode) else goSleep()
+                    if (bytes.isNotEmpty()) solve(bytes) else goSleep()
                 }
             },
             onError = { err ->
@@ -361,7 +365,15 @@ class MainActivity : AppCompatActivity() {
         }, 3000)
     }
 
-    private fun solve(bytes: ByteArray, easyMode: Boolean) {
+    private fun triggerHardwareCapture() {
+        if (state == 1) {
+            handler.removeCallbacksAndMessages(null)
+            status.text = "正在拍照..."
+            cameraHelper?.takePicture()
+        }
+    }
+
+    private fun solve(bytes: ByteArray) {
         state = 2
         previewCard.visibility = View.GONE
         
@@ -370,78 +382,49 @@ class MainActivity : AppCompatActivity() {
             cameraHelper = null
         }
 
+        status.text = ""
         status.visibility = View.VISIBLE
         contentContainer.visibility = View.VISIBLE
         contentContainer.removeAllViews()
 
-        if (easyMode) {
-            // ================= 简单秒出模式 (Easy-Answerer) =================
-            status.text = "正在秒出答案..."
-            ensureKatexWebViewLoaded().setMarkdownText("")
+        val stageTextView = TextView(this).apply {
+            setTextColor(0xff00ff66.toInt())
+            textSize = 13f
+            setLineSpacing(4f, 1.2f)
+            setBackgroundColor(Color.BLACK)
+        }
+        contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
 
-            lifecycleScope.launch {
-                try {
-                    val result = NativePipelineEngine.runEasyModePipeline(
-                        this@MainActivity,
-                        bytes,
-                        onStreamToken = { streamAcc ->
-                            withContext(Dispatchers.Main) {
-                                status.visibility = View.GONE
-                                ensureKatexWebViewLoaded().setMarkdownText(streamAcc)
-                            }
+        lifecycleScope.launch {
+            try {
+                val result = NativePipelineEngine.runThreeStagePipeline(
+                    this@MainActivity,
+                    bytes,
+                    onStage1QuestionsUpdate = { qs ->
+                        withContext(Dispatchers.Main) {
+                            stageTextView.text = qs.joinToString("\n") { "${it.id}. ${it.content.trim()}" }
                         }
-                    )
-                    state = 3
-                    status.visibility = View.GONE
-                    ensureKatexWebViewLoaded().setMarkdownText(result)
-                } catch (e: Exception) {
-                    state = 3
-                    status.visibility = View.VISIBLE
-                    status.text = "秒出失败: ${e.message}"
-                }
-            }
-        } else {
-            // ================= 三阶段 Agent 模式 (Agent-Answerer) =================
-            status.text = ""
-            val stageTextView = TextView(this).apply {
-                setTextColor(0xff00ff66.toInt())
-                textSize = 13f
-                setLineSpacing(4f, 1.2f)
-                setBackgroundColor(Color.BLACK)
-            }
-            contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
-
-            lifecycleScope.launch {
-                try {
-                    val result = NativePipelineEngine.runThreeStagePipeline(
-                        this@MainActivity,
-                        bytes,
-                        onStage1QuestionsUpdate = { qs ->
-                            withContext(Dispatchers.Main) {
-                                stageTextView.text = qs.joinToString("\n") { "${it.id}. ${it.content.trim()}" }
-                            }
-                        },
-                        onStage2DoubleColumnUpdate = { ss, topStatusText ->
-                            withContext(Dispatchers.Main) {
-                                status.text = topStatusText
-                                stageTextView.text = ss.sortedBy { it.originalOrder }.chunked(2).joinToString("\n") { row -> row.joinToString("  ") { "[${it.id}][T:${it.toolCount}]${if (it.isDone) "√" else "..."}" } }
-                            }
-                        },
-                        onStage3StreamToken = { streamText ->
-                            withContext(Dispatchers.Main) {
-                                status.visibility = View.GONE
-                                ensureKatexWebViewLoaded().setMarkdownText(streamText)
-                            }
+                    },
+                    onStage2DoubleColumnUpdate = { ss, topStatusText ->
+                        withContext(Dispatchers.Main) {
+                            status.text = topStatusText
+                            stageTextView.text = ss.sortedBy { it.originalOrder }.chunked(2).joinToString("\n") { row -> row.joinToString("  ") { "[${it.id}][T:${it.toolCount}]${if (it.isDone) "√" else "..."}" } }
                         }
-                    )
-                    state = 3
-                    status.visibility = View.GONE
-                    ensureKatexWebViewLoaded().setMarkdownText(result)
-                } catch (e: Exception) {
-                    state = 3
-                    status.visibility = View.VISIBLE
-                    status.text = "解题失败: ${e.message}"
-                }
+                    },
+                    onStage3StreamToken = { streamText ->
+                        withContext(Dispatchers.Main) {
+                            status.visibility = View.GONE
+                            ensureKatexWebViewLoaded().setMarkdownText(streamText)
+                        }
+                    }
+                )
+                state = 3
+                status.visibility = View.GONE
+                ensureKatexWebViewLoaded().setMarkdownText(result)
+            } catch (e: Exception) {
+                state = 3
+                status.visibility = View.VISIBLE
+                status.text = "解题失败: ${e.message}"
             }
         }
     }
@@ -479,7 +462,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        battery.text = "${BatteryHelper.level(this)}%"
+        battery.text = "${BatteryHelper.level(this)}"
     }
 
     override fun onDestroy() {
