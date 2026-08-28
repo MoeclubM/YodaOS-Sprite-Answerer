@@ -14,9 +14,8 @@
             color: #00ff66;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
             font-size: 13.5px;
-            /* 紧凑适中的行高，消除多余空白 */
             line-height: 1.5;
-            padding: 2px 4px 140px 4px;
+            padding: 4px 6px 140px 6px;
             overflow-x: hidden;
             overflow-y: auto;
             word-wrap: break-word;
@@ -33,11 +32,10 @@
             line-height: 1.5;
         }
 
-        /* 核心公式修复：紧凑排版，显式加粗荧光绿分数线与边框 */
+        /* 统一 KaTeX 荧光绿配色与官方高精度几何布局 */
         .katex {
             color: #00ff66 !important;
             font-size: 1.08em;
-            line-height: 1.35 !important;
             white-space: normal !important;
             word-wrap: break-word !important;
             display: inline-block;
@@ -51,29 +49,31 @@
             overflow-y: visible !important;
         }
 
-        /* 分数线 (frac-line) */
+        /* 核心修复：100% 遵循 KaTeX 官方精确计算的分数线位置与 0.04em 标准纤细粗细，仅赋予荧光绿颜色，绝不破坏物理几何位置！ */
         .katex .frac-line, .katex-display .frac-line {
             border-bottom-color: #00ff66 !important;
-            border-bottom-width: 1.5px !important;
-            min-height: 1.5px !important;
-            display: block !important;
-            background-color: #00ff66 !important;
+            border-bottom-style: solid !important;
+            border-bottom-width: 0.04em !important;
+            min-height: 1px !important;
+            display: inline-block !important;
+            width: 100% !important;
+            background-color: transparent !important;
         }
 
         /* 根号与开方符号 */
         .katex .sqrt-line {
             border-top-color: #00ff66 !important;
-            border-top-width: 1.5px !important;
-            background-color: #00ff66 !important;
+            border-top-style: solid !important;
+            border-top-width: 0.04em !important;
+            background-color: transparent !important;
         }
 
         .katex .mord, .katex .mbin, .katex .mrel, .katex .mopen, .katex .mclose, .katex .mpunct, .katex .minner, .katex .mop {
             color: #00ff66 !important;
         }
 
-        /* 紧凑块级公式：上下仅 0.25em 间距，彻底消除大间隙 */
         .katex-display {
-            margin: 0.25em 0 !important;
+            margin: 0.3em 0 !important;
             padding: 2px 0 !important;
             max-width: 100% !important;
             overflow-x: auto !important;
@@ -103,7 +103,6 @@
         var isAutoScrolling = false;
         var resumeAutoScrollTimer = null;
 
-        // 紧凑 Markdown 解析器：连续空行合并，消除空隙过大
         function parseCompactMarkdown(md) {
             if (!md) return '';
             var lines = md.split('\n');
@@ -156,7 +155,7 @@
                 clearInterval(autoScrollTimer);
                 autoScrollTimer = null;
             }
-            // 延时 3 秒首屏静止，随后以 0.4px/50ms 极稳滚动
+            // 延时 3.5 秒首屏静止，随后以 0.35px/50ms 极稳超缓滚动
             setTimeout(function() {
                 var scrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
                 var clientHeight = window.innerHeight;
@@ -171,14 +170,14 @@
                             autoScrollTimer = null;
                             isAutoScrolling = false;
                         } else {
-                            window.scrollBy(0, 0.4);
+                            window.scrollBy(0, 0.35);
                         }
                     }, 50);
                 }
-            }, 3000);
+            }, 3500);
         }
 
-        // 强力高精度滚动接口
+        // 高度精准的手动滚动接口
         window.manualScroll = function(deltaY) {
             isAutoScrolling = false;
             if (resumeAutoScrollTimer) {

@@ -42,10 +42,9 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 紧凑排版：合并段落连续换行，消除公式与文字之间的巨大空白间距；
- * 2. 分数线与开方线显式加粗绘制荧光绿，消除断线；
- * 3. 答案态下 (state=3) 拦截并调度所有触控与按键手势，实现 100% 顺畅上下滚动翻页；
- * 4. 自动滚动速度调优为极缓微步向下推移。
+ * 1. 修复 KaTeX 分数线太粗太靠下的问题：遵循官方 0.04em 纤细居中标准，荧光绿高亮且绝无断线；
+ * 2. 彻底解决触控板无法滚动的问题：拦截 Rokid 硬件滑动序列 (22->20 / 21->19) 与 Touch 拖拽手势，双向平滑滚动；
+ * 3. 极缓平滑自动向下滚动 (0.35px/50ms)，停留 3.5s 后开始，用户手动滚动立即让步 6s。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -150,11 +149,11 @@ class MainActivity : AppCompatActivity() {
         // 3. 触控手势探测器
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy < -80 || vx > 80) {
+                if (vy < -60 || vx > 60) {
                     handleSwipeUp()
                     return true
                 }
-                if (vy > 80 || vx < -80) {
+                if (vy > 60 || vx < -60) {
                     handleSwipeDown()
                     return true
                 }
@@ -181,16 +180,18 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器
+        // 4. 硬件输入分发器 (拦截 Rokid 硬件序列 22->20 / 21->19 与广播)
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
                 if (state == 0) enterPreview()
             },
             onSwipeUp = {
+                Log.d("ARAnswerer", "Hardware Swipe Up received: state=$state")
                 handleSwipeUp()
             },
             onSwipeDown = {
+                Log.d("ARAnswerer", "Hardware Swipe Down received: state=$state")
                 handleSwipeDown()
             }
         ).also { it.start() }
@@ -224,8 +225,7 @@ class MainActivity : AppCompatActivity() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            // 答案态上滑 -> 向上平滑滚动 160px
-            katexWebView?.smoothScroll(-160)
+            katexWebView?.smoothScroll(-150)
         }
     }
 
@@ -235,8 +235,7 @@ class MainActivity : AppCompatActivity() {
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            // 答案态下滑 -> 向下平滑滚动 160px
-            katexWebView?.smoothScroll(160)
+            katexWebView?.smoothScroll(150)
         }
     }
 
@@ -296,7 +295,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 手势探测器处理
         gestureDetector.onTouchEvent(ev)
 
         when (ev.action) {
@@ -315,11 +313,6 @@ class MainActivity : AppCompatActivity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 handler.removeCallbacks(longPressToCaptureRunnable)
             }
-        }
-
-        // 答案态下如果 WebView 存在，同时将 touch 事件分发给 WebView
-        if (state == 3 && katexWebView != null) {
-            katexWebView?.onTouchEvent(ev)
         }
 
         return true
