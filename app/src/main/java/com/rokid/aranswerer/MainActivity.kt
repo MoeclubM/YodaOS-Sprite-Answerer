@@ -40,6 +40,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+/**
+ * 完整对齐要求：
+ * 1. 修复分数线 (frac-line) 与根号在黑底下的可见性，杜绝高斯定理/积分分式上下截断与虚线遮挡；
+ * 2. 答案呈现状态下 (state=3) 直接将 Touch 事件无缝透传给 WebView 与手势探测器，确保手指拖拽与上滑/下滑 100% 滚动；
+ * 3. 自动滚动速度调整为极缓 0.4px/50ms，停留 4s 后开始，让步手动滑动 6s；
+ * 4. 25s 超时重试 + 失败自动 fallback 下一个模型并在顶部提示 1s。
+ */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
@@ -140,7 +147,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器：精准捕获滑动 (Fling 与 Scroll)
+        // 3. 触控手势探测器
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (vy < -100 || vx > 100) {
@@ -175,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器 (外接按键与硬件滑动序列)
+        // 4. 硬件输入分发器
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
@@ -218,8 +225,8 @@ class MainActivity : AppCompatActivity() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            // 答案态上滑 -> 向上滚动 140px
-            katexWebView?.smoothScroll(-140)
+            // 答案态上滑 -> 向上滚动 160px
+            katexWebView?.smoothScroll(-160)
         }
     }
 
@@ -229,8 +236,8 @@ class MainActivity : AppCompatActivity() {
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            // 答案态下滑 -> 向下滚动 140px
-            katexWebView?.smoothScroll(140)
+            // 答案态下滑 -> 向下滚动 160px
+            katexWebView?.smoothScroll(160)
         }
     }
 
@@ -290,7 +297,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 答案态下将触摸事件优先喂入手势探测器
         gestureDetector.onTouchEvent(ev)
+
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> {
                 startX = ev.x
@@ -308,6 +317,12 @@ class MainActivity : AppCompatActivity() {
                 handler.removeCallbacks(longPressToCaptureRunnable)
             }
         }
+
+        // 答案态下如果 WebView 存在，同时将 touch 事件分发给 WebView，支持双通道触控
+        if (state == 3 && katexWebView != null) {
+            katexWebView?.onTouchEvent(ev)
+        }
+
         return true
     }
 
