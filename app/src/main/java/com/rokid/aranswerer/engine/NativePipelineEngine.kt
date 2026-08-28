@@ -53,11 +53,11 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
+    // 严选真实可用且支持推理的模型列表 (Gemini, DeepSeek 官方通道, Luna)
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
         "deepseek-v4-flash-vision-exp",
-        "gpt-5.6-luna",
-        "muse-spark-1.2"
+        "gpt-5.6-luna"
     )
 
     var currentModel: String = "gemini-3.7-flash"
@@ -138,9 +138,6 @@ object NativePipelineEngine {
         val model: String
     )
 
-    /**
-     * 真正的零缓冲字节流解析器：每收到一个 TCP Packet 立即解码并派发 onToken 回调
-     */
     private suspend fun streamMessages(
         context: Context,
         messages: JSONArray,
@@ -187,7 +184,6 @@ object NativePipelineEngine {
                             readTimeout = 25000
                             doOutput = true
                             doInput = true
-                            // 禁用内置 HTTP 缓冲，确保数据块立即可用
                             setChunkedStreamingMode(0)
                             setRequestProperty("Content-Type", "application/json; charset=utf-8")
                             setRequestProperty("Accept", "text/event-stream")
@@ -305,7 +301,6 @@ object NativePipelineEngine {
                     "gemini-3.7-flash" -> "Gemini"
                     "deepseek-v4-flash-vision-exp" -> "DeepSeek"
                     "gpt-5.6-luna" -> "Luna"
-                    "muse-spark-1.2" -> "MuseSpark"
                     else -> nextModel
                 }
                 Log.i(TAG, "Fallback to next model: $nextDisplayName")
@@ -318,13 +313,9 @@ object NativePipelineEngine {
         throw lastErr ?: RuntimeException("请求失败，请检查网络或 API Key")
     }
 
-    /**
-     * 高容错流式题目解析器：实时正则捕获已完整到达的单道题目
-     */
     private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
         val list = mutableListOf<ExtractedQuestion>()
         try {
-            // 匹配 {"id": "...", "content": "..."}
             val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])", Pattern.DOTALL)
             val matcher = jsonObjectPattern.matcher(rawStreamText)
             var count = 0
@@ -350,7 +341,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 (真正流式：出一题立刻显示一题) =================
+        // ================= Stage 1: 题目提取 (优先使用具备顶级多模态能力的视觉模型) =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -375,6 +366,7 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
+        // Stage 1 提取优先使用多模态视觉模型
         val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
             val partial = parseIncrementalQuestions(streamAcc)
             if (partial.size > lastDispatchedCount) {
@@ -400,7 +392,7 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 =================
+        // ================= Stage 2: 多题并发求解 (支持 Luna, DeepSeek, Gemini 并行深度推理与工具调用) =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
@@ -454,7 +446,7 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 (严格保留实际原题号) =================
+        // ================= Stage 3: AR 排版提炼 =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
@@ -490,7 +482,6 @@ object NativePipelineEngine {
             Log.w(TAG, "Stage 3 summary failed, fallback to Stage 2 answers: ${e.message}", e)
         }
 
-        // 兜底直出：严格按照每道题目的实际原题号拼接呈现
         Log.d(TAG, "Applying Stage 2 direct answers fallback...")
         val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n\n") {
             "**${it.id}.** ${it.answer}"

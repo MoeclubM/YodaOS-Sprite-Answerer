@@ -40,13 +40,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
-/**
- * 完整对齐要求：
- * 1. 严格支持鼠标拖动、触控板拖拽与手势滑动：答案态下 (state=3) 直接将 Touch 事件分发给系统与 WebView 原生处理，100% 顺畅上下拖动滚动；
- * 2. 严格对齐切换模型/进入拍摄的滑动识别机制，在答案态下同样直接驱动向上/向下翻页滚动；
- * 3. 完美保留 0.04em 纤细居中标准分数线；
- * 4. 极缓自动平滑滚动。
- */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
@@ -179,7 +172,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器 (严格对齐切换模型/进入拍摄的硬件滑动捕获)
+        // 4. 硬件输入分发器
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
@@ -220,9 +213,6 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed(hideModelStatusRunnable, 1000)
     }
 
-    /**
-     * 上滑操作：休眠态切模型，答案态向上平滑翻页
-     */
     private fun handleSwipeUp() {
         if (state == 0) {
             switchModel(1)
@@ -232,9 +222,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 下滑操作：休眠态进入拍摄，取景态提前抓拍，答案态向下平滑翻页
-     */
     private fun handleSwipeDown() {
         if (state == 0) {
             enterPreview()
@@ -270,7 +257,6 @@ class MainActivity : AppCompatActivity() {
             "gemini-3.7-flash" -> "Gemini"
             "deepseek-v4-flash-vision-exp" -> "DeepSeek"
             "gpt-5.6-luna" -> "Luna"
-            "muse-spark-1.2" -> "MuseSpark"
             else -> chosen
         }
 
@@ -302,7 +288,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 优先将手势事件喂入探测器
         gestureDetector.onTouchEvent(ev)
 
         when (ev.action) {
@@ -323,7 +308,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 关键：在答案态 (state=3) 下直接将触摸/鼠标拖拽事件完整传递给系统的原生分发树，让 WebView 自行响应滑动手势与鼠标拖拽
         return super.dispatchTouchEvent(ev)
     }
 
