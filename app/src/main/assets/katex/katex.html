@@ -17,10 +17,10 @@
             background-color: #000000;
             color: #00ff66;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-            /* 紧凑适宜的 AR 眼镜阅读字号与行高 */
             font-size: 13.5px;
-            line-height: 1.45;
-            padding: 2px 4px 60px 4px;
+            /* 增大行高，为上下高分式/根号/矩阵预留充分的垂直排版空间，杜绝上下截断遮挡 */
+            line-height: 1.8;
+            padding: 4px 6px 120px 6px;
             overflow-x: hidden;
             word-wrap: break-word;
             word-break: break-word;
@@ -29,34 +29,43 @@
         p, div, span, li, h1, h2, h3, table, td, th {
             color: #00ff66 !important;
         }
-        /* 核心公式自适应换行与横向保护 */
+        /* 核心公式垂直高度与自适应换行保护 */
         .katex {
             color: #00ff66 !important;
-            font-size: 1.05em;
+            font-size: 1.08em;
+            line-height: 1.6 !important;
             white-space: normal !important;
             word-wrap: break-word !important;
+            /* 预留上下外边距，防止上下高极限/上下标被上一行文字削头或遮挡 */
+            padding-top: 3px !important;
+            padding-bottom: 3px !important;
         }
         .katex-html {
             white-space: normal !important;
             display: inline-block !important;
             max-width: 100% !important;
             overflow-wrap: anywhere !important;
+            /* 保证上下伸缩符号完整展现 */
+            overflow-y: visible !important;
         }
         .katex-display {
-            margin: 0.3em 0 !important;
+            margin: 0.6em 0 !important;
+            padding: 4px 0 !important;
             max-width: 100% !important;
             overflow-x: auto !important;
-            overflow-y: hidden !important;
+            /* 确保高矩阵、双重分式、积分上下限垂直方向 100% 完整绘制，不发生裁剪 */
+            overflow-y: visible !important;
             white-space: normal !important;
         }
         .katex-display > .katex {
             white-space: normal !important;
             text-align: left !important;
+            display: block !important;
         }
         .bold-title {
             font-weight: bold;
             color: #00ff66;
-            margin-top: 4px;
+            margin-top: 6px;
             margin-bottom: 2px;
             display: inline-block;
         }
@@ -67,6 +76,7 @@
     <script>
         var autoScrollTimer = null;
         var isAutoScrolling = false;
+        var resumeAutoScrollTimer = null;
 
         function parseSimpleMarkdown(md) {
             if (!md) return '';
@@ -104,7 +114,6 @@
                 container.innerText = md;
             }
 
-            // 渲染完成 2.5 秒后开启轻量自动平滑向下滚动
             startAutoScrollIfNeeded();
         }
 
@@ -113,7 +122,7 @@
                 clearInterval(autoScrollTimer);
                 autoScrollTimer = null;
             }
-            // 延时 2.5 秒让用户先阅读顶部内容，若内容超出屏幕高度则以 1.5px 步长缓慢平滑自动向下滚动
+            // 延时 3.5 秒先让用户阅读首屏要点，超屏后以 0.5px/50ms (极缓极稳约 10px/s) 平滑微步滚动
             setTimeout(function() {
                 var scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
                 var clientHeight = window.innerHeight;
@@ -128,21 +137,27 @@
                             autoScrollTimer = null;
                             isAutoScrolling = false;
                         } else {
-                            window.scrollBy({ top: 1.5, behavior: 'auto' });
+                            window.scrollBy({ top: 0.5, behavior: 'auto' });
                         }
-                    }, 40);
+                    }, 50);
                 }
-            }, 2500);
+            }, 3500);
         }
 
-        // 手动触控滚动接口 (供 Android WebView evaluateJavascript 调用)
+        // 手动触控滚动接口：即时平滑滚动指定像素
         window.manualScroll = function(deltaY) {
-            // 用户一旦手动干预滚动，暂停自动滚动 4 秒
+            // 用户一旦手动干预，立即暂停自动滚动 6 秒
             isAutoScrolling = false;
+            if (resumeAutoScrollTimer) {
+                clearTimeout(resumeAutoScrollTimer);
+            }
+            
+            // 极速平滑滚动
             window.scrollBy({ top: deltaY, behavior: 'smooth' });
-            setTimeout(function() {
+            
+            resumeAutoScrollTimer = setTimeout(function() {
                 isAutoScrolling = true;
-            }, 4000);
+            }, 6000);
         };
     </script>
 </body>

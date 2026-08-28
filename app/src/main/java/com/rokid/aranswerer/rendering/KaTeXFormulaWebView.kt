@@ -14,9 +14,9 @@ import android.webkit.WebViewClient
 /**
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
  * 1. 资源全部内置于 assets/katex 目录；
- * 2. 支持 JS 级 manualScroll 平滑滚动与 Android 原生 scrollBy 双重兼容；
- * 3. 完美兼容标准 LaTeX 行内 $...$ 与块级 $$...$$ 换行渲染；
- * 4. 内置自动平滑向下滚动机制。
+ * 2. 完美支持 JS + 原生双通道高精度手动滚动；
+ * 3. 增强垂直高度与行间距，保护矩阵、分式、积分上下限 100% 完整绘制不遮挡；
+ * 4. 极缓平滑自动向下滚动。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,
@@ -82,11 +82,11 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
     }
 
     /**
-     * 强力滚动支持：优先调用 JS 内部的 manualScroll，同时配合原生 scrollBy 确保 100% 滚动生效
+     * 高精度平滑滚动：JS 与原生双通道调度
      */
     fun smoothScroll(deltaY: Int) {
         post {
-            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); }", null)
+            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); } else { window.scrollBy(0, $deltaY); }", null)
             scrollBy(0, deltaY)
         }
     }

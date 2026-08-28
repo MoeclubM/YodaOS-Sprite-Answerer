@@ -40,13 +40,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
-/**
- * 完整对齐要求：
- * 1. 紧凑 AR 字体与行高排版，公式过长自动换行，杜绝横向超出屏幕；
- * 2. 答案呈现后 2.5s 开启平滑自动向下滚动；
- * 3. 触控板/外接戒指上滑/下滑 100% 触发平滑滚动翻页；
- * 4. 双击随时返回纯黑休眠。
- */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
@@ -147,15 +140,24 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器
+        // 3. 触控手势探测器：精准捕获滑动 (Fling 与 Scroll)
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy < -120 || vx > 120) {
+                if (vy < -100 || vx > 100) {
                     handleSwipeUp()
                     return true
                 }
-                if (vy > 120 || vx < -120) {
+                if (vy > 100 || vx < -100) {
                     handleSwipeDown()
+                    return true
+                }
+                return false
+            }
+
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+                if (state == 3) {
+                    // 答案态手指直接滑动拖拽滚动
+                    katexWebView?.smoothScroll(distanceY.toInt())
                     return true
                 }
                 return false
@@ -173,7 +175,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器
+        // 4. 硬件输入分发器 (外接按键与硬件滑动序列)
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
@@ -216,8 +218,8 @@ class MainActivity : AppCompatActivity() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            // 答案呈现态上滑 -> 向上平滑滚动 180px
-            katexWebView?.smoothScroll(-180)
+            // 答案态上滑 -> 向上滚动 140px
+            katexWebView?.smoothScroll(-140)
         }
     }
 
@@ -227,8 +229,8 @@ class MainActivity : AppCompatActivity() {
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            // 答案呈现态下滑 -> 向下平滑滚动 180px
-            katexWebView?.smoothScroll(180)
+            // 答案态下滑 -> 向下滚动 140px
+            katexWebView?.smoothScroll(140)
         }
     }
 
