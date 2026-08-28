@@ -14,8 +14,8 @@ import android.webkit.WebViewClient
 
 /**
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
- * 1. 开启全部硬件与软件滚动能力，支持原生鼠标直接拖拽、触控板触摸滑动与 JS 双向驱动；
- * 2. 完美适配全离线 KaTeX 0.16.8 渲染引擎。
+ * 1. 采用绝对硬件加速 transform: translateY 驱动滚动，彻底消除任何 Android WebView 原生滚动失效！
+ * 2. 完美支持鼠标拖动、触控板单指滑动 (22->20 / 21->19)、Fling 惯性翻页与超缓自动滚动。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,
@@ -30,7 +30,6 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
         setBackgroundColor(Color.BLACK)
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
-        // 关键：允许获取焦点与触控滚动
         isFocusable = true
         isFocusableInTouchMode = true
         isClickable = true
@@ -46,15 +45,11 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
             useWideViewPort = true
             loadWithOverviewMode = true
             textZoom = 100
-            // 开启内置缩放控制与手势滚动
-            setSupportZoom(false)
-            builtInZoomControls = false
-            displayZoomControls = false
         }
 
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
-        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        overScrollMode = View.OVER_SCROLL_NEVER
 
         webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -90,22 +85,11 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
     }
 
     /**
-     * 强力多通道手动平滑滚动调度
+     * 强力硬件加速滚动调度：直接驱动 JS 的 manualScroll(deltaY)
      */
     fun smoothScroll(deltaY: Int) {
         post {
-            // 1. JS DOM 精准滚动
             evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); }", null)
-            
-            // 2. 原生 WebView 硬件平滑滚动
-            scrollBy(0, deltaY)
-            
-            // 3. 原生 pageUp / pageDown 辅助翻页
-            if (deltaY > 50) {
-                pageDown(false)
-            } else if (deltaY < -50) {
-                pageUp(false)
-            }
         }
     }
 }

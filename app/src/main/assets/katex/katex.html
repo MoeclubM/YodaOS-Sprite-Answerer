@@ -2,29 +2,39 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <link rel="stylesheet" href="file:///android_asset/katex/katex.min.css">
     <script src="file:///android_asset/katex/katex.min.js"></script>
     <script src="file:///android_asset/katex/auto-render.min.js"></script>
     <style>
-        html, body {
+        * {
             margin: 0;
             padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* 外部视口固定 */
             background-color: #000000;
             color: #00ff66;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-            font-size: 13.5px;
-            line-height: 1.55;
-            padding: 4px 6px 180px 6px;
-            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* 核心内部滚动视口容器：使用硬件加速 transform: translateY 驱动滚动，100% 免疫任何 Android WebView 滚动失效！ */
+        #scroll-wrapper {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
-            /* 关键：允许网页根据内容自然撑开无限高度，绝不隐藏滚动，开启流畅平滑触控滚动 */
-            min-height: 100vh;
-            overflow-x: hidden;
-            overflow-y: visible !important;
-            -webkit-overflow-scrolling: touch;
-            touch-action: pan-y;
-            user-select: text;
+            min-height: 100%;
+            padding: 4px 6px 180px 6px;
+            will-change: transform;
+            transform: translateY(0px);
+            transition: transform 0.15s ease-out;
         }
 
         p, div, span, li, h1, h2, h3, table, td, th {
@@ -34,6 +44,7 @@
         .para {
             margin-bottom: 4px;
             line-height: 1.55;
+            font-size: 13.5px;
         }
 
         .katex {
@@ -98,11 +109,18 @@
     </style>
 </head>
 <body>
-    <div id="content"></div>
+    <div id="scroll-wrapper">
+        <div id="content"></div>
+    </div>
     <script>
+        var currentScrollY = 0;
+        var maxScrollY = 0;
         var autoScrollTimer = null;
         var isAutoScrolling = false;
         var resumeAutoScrollTimer = null;
+
+        var wrapper = document.getElementById('scroll-wrapper');
+        var container = document.getElementById('content');
 
         function parseCompactMarkdown(md) {
             if (!md) return '';
@@ -126,7 +144,9 @@
         }
 
         function renderMarkdown(md) {
-            var container = document.getElementById('content');
+            currentScrollY = 0;
+            updateTransform(0, false);
+
             if (!md || !md.trim()) {
                 container.innerHTML = '';
                 return;
@@ -148,8 +168,45 @@
                 container.innerText = md;
             }
 
+            setTimeout(calculateMaxScroll, 100);
             startAutoScrollIfNeeded();
         }
+
+        function calculateMaxScroll() {
+            var wrapperHeight = wrapper.offsetHeight;
+            var windowHeight = window.innerHeight;
+            maxScrollY = Math.max(0, wrapperHeight - windowHeight);
+        }
+
+        function updateTransform(y, animate) {
+            if (animate) {
+                wrapper.style.transition = 'transform 0.18s ease-out';
+            } else {
+                wrapper.style.transition = 'none';
+            }
+            wrapper.style.transform = 'translateY(' + (-y) + 'px)';
+        }
+
+        // 终极手动滚动接口：通过硬件加速 transform: translateY 精准推移
+        window.manualScroll = function(deltaY) {
+            calculateMaxScroll();
+            if (maxScrollY <= 0) return;
+
+            isAutoScrolling = false;
+            if (resumeAutoScrollTimer) {
+                clearTimeout(resumeAutoScrollTimer);
+            }
+
+            currentScrollY += deltaY;
+            if (currentScrollY < 0) currentScrollY = 0;
+            if (currentScrollY > maxScrollY) currentScrollY = maxScrollY;
+
+            updateTransform(currentScrollY, true);
+
+            resumeAutoScrollTimer = setTimeout(function() {
+                isAutoScrolling = true;
+            }, 6000);
+        };
 
         function startAutoScrollIfNeeded() {
             if (autoScrollTimer) {
@@ -157,40 +214,77 @@
                 autoScrollTimer = null;
             }
             setTimeout(function() {
-                var maxScroll = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight) - window.innerHeight;
-                if (maxScroll > 20) {
+                calculateMaxScroll();
+                if (maxScrollY > 20) {
                     isAutoScrolling = true;
                     autoScrollTimer = setInterval(function() {
                         if (!isAutoScrolling) return;
-                        var current = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
-                        if (current >= maxScroll - 2) {
+                        if (currentScrollY >= maxScrollY) {
                             clearInterval(autoScrollTimer);
                             autoScrollTimer = null;
                             isAutoScrolling = false;
                         } else {
-                            window.scrollBy(0, 0.35);
+                            currentScrollY += 0.4;
+                            if (currentScrollY > maxScrollY) currentScrollY = maxScrollY;
+                            updateTransform(currentScrollY, false);
                         }
                     }, 50);
                 }
             }, 3500);
         }
 
-        // 强力跨环境滚动接口：直接操控 window 与 body/html 的真实 scrollTop
-        window.manualScroll = function(deltaY) {
-            isAutoScrolling = false;
-            if (resumeAutoScrollTimer) {
-                clearTimeout(resumeAutoScrollTimer);
+        // 支持原生鼠标/触控板物理拖拽滚动 (Touch/Mouse Events 监听)
+        var isDragging = false;
+        var startDragY = 0;
+        var startScrollY = 0;
+
+        window.addEventListener('touchstart', function(e) {
+            if (e.touches.length === 1) {
+                isDragging = true;
+                startDragY = e.touches[0].clientY;
+                startScrollY = currentScrollY;
+                isAutoScrolling = false;
             }
-            
-            window.scrollBy(0, deltaY);
-            var nextTop = (window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0) + deltaY;
-            document.documentElement.scrollTop = nextTop;
-            document.body.scrollTop = nextTop;
-            
-            resumeAutoScrollTimer = setTimeout(function() {
-                isAutoScrolling = true;
-            }, 6000);
-        };
+        }, { passive: false });
+
+        window.addEventListener('touchmove', function(e) {
+            if (!isDragging) return;
+            var currentY = e.touches[0].clientY;
+            var diff = startDragY - currentY;
+            currentScrollY = startScrollY + diff;
+            if (currentScrollY < 0) currentScrollY = 0;
+            if (currentScrollY > maxScrollY) currentScrollY = maxScrollY;
+            updateTransform(currentScrollY, false);
+            e.preventDefault();
+        }, { passive: false });
+
+        window.addEventListener('touchend', function(e) {
+            isDragging = false;
+            if (resumeAutoScrollTimer) clearTimeout(resumeAutoScrollTimer);
+            resumeAutoScrollTimer = setTimeout(function() { isAutoScrolling = true; }, 6000);
+        });
+
+        window.addEventListener('mousedown', function(e) {
+            isDragging = true;
+            startDragY = e.clientY;
+            startScrollY = currentScrollY;
+            isAutoScrolling = false;
+        });
+
+        window.addEventListener('mousemove', function(e) {
+            if (!isDragging) return;
+            var diff = startDragY - e.clientY;
+            currentScrollY = startScrollY + diff;
+            if (currentScrollY < 0) currentScrollY = 0;
+            if (currentScrollY > maxScrollY) currentScrollY = maxScrollY;
+            updateTransform(currentScrollY, false);
+        });
+
+        window.addEventListener('mouseup', function(e) {
+            isDragging = false;
+            if (resumeAutoScrollTimer) clearTimeout(resumeAutoScrollTimer);
+            resumeAutoScrollTimer = setTimeout(function() { isAutoScrolling = true; }, 6000);
+        });
     </script>
 </body>
 </html>
