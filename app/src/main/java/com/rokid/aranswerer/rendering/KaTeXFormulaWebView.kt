@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Color
 import android.util.AttributeSet
 import android.util.Log
-import android.view.MotionEvent
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -14,8 +13,6 @@ import android.webkit.WebViewClient
 
 /**
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
- * 1. 采用绝对硬件加速 transform: translateY 驱动滚动，彻底消除任何 Android WebView 原生滚动失效！
- * 2. 完美支持鼠标拖动、触控板单指滑动 (22->20 / 21->19)、Fling 惯性翻页与超缓自动滚动。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,
@@ -28,7 +25,6 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
 
     init {
         setBackgroundColor(Color.BLACK)
-        setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         isFocusable = true
         isFocusableInTouchMode = true
@@ -62,7 +58,7 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 isLoaded = true
-                Log.d("KaTeXWebView", "Local KaTeX Shell loaded from assets")
+                Log.d("KaTeXWebView", "KaTeX Shell Loaded -> isLoaded=true")
                 pendingMarkdown?.let {
                     setMarkdownText(it)
                     pendingMarkdown = null
@@ -75,21 +71,23 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
 
     fun setMarkdownText(markdownText: String) {
         if (!isLoaded) {
+            Log.d("KaTeXWebView", "setMarkdownText pending: length=${markdownText.length}")
             pendingMarkdown = markdownText
             return
         }
 
         val escaped = org.json.JSONObject.quote(markdownText)
         val jsCode = "renderMarkdown($escaped);"
-        evaluateJavascript(jsCode, null)
+        evaluateJavascript(jsCode) { res ->
+            Log.d("KaTeXWebView", "renderMarkdown evaluated: $res")
+        }
     }
 
-    /**
-     * 强力硬件加速滚动调度：直接驱动 JS 的 manualScroll(deltaY)
-     */
     fun smoothScroll(deltaY: Int) {
         post {
-            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); }", null)
+            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); }") { res ->
+                Log.d("KaTeXWebView", "smoothScroll($deltaY) evaluated: $res")
+            }
         }
     }
 }
