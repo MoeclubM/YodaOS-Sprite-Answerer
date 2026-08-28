@@ -25,7 +25,7 @@ class BareGlassesInputDispatcher(
     private var lastEventTime = 0L
 
     private var lastHardwareSwipeTime = 0L
-    private val DEBOUNCE_INTERVAL_MS = 250L
+    private val DEBOUNCE_INTERVAL_MS = 200L
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -113,8 +113,8 @@ class BareGlassesInputDispatcher(
                 return true
             }
 
-            // 2. 单按键滑动检测 (部分系统版本或外接设备直接上报单个方向键/翻页键)
-            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_PAGE_DOWN || keyCode == 183) {
+            // 2. 单按键滑动检测 (单独上报 20/22/183 或 19/21/184)
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == KeyEvent.KEYCODE_PAGE_DOWN || keyCode == 183) {
                 if (now - lastHardwareSwipeTime > DEBOUNCE_INTERVAL_MS) {
                     lastHardwareSwipeTime = now
                     onSwipeDown()
@@ -122,7 +122,7 @@ class BareGlassesInputDispatcher(
                 return true
             }
 
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_PAGE_UP || keyCode == 184) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_PAGE_UP || keyCode == 184) {
                 if (now - lastHardwareSwipeTime > DEBOUNCE_INTERVAL_MS) {
                     lastHardwareSwipeTime = now
                     onSwipeUp()
