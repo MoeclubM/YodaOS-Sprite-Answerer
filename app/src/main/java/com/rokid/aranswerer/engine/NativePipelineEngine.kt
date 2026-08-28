@@ -51,6 +51,8 @@ data class StreamChatResult(
 )
 
 object NativePipelineEngine {
+    private const val TAG = "NativePipelineEngine"
+
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
         "deepseek-v4-flash-vision-exp",
@@ -136,9 +138,6 @@ object NativePipelineEngine {
         val model: String
     )
 
-    /**
-     * 统一底层流式请求（内置 25s 响应超时检测、单模型失败重试 1 次、失败自动 fallback 到下一个模型并提示）
-     */
     private suspend fun streamMessages(
         context: Context,
         messages: JSONArray,
@@ -163,11 +162,10 @@ object NativePipelineEngine {
                 continue
             }
 
-            // 每个模型最多尝试 2 次 (初次请求 + 失败重试 1 次)
             for (attempt in 1..2) {
                 var conn: HttpURLConnection? = null
                 try {
-                    // 25s 超时管控机制
+                    Log.d(TAG, "Requesting model ${provider.model} (attempt $attempt)...")
                     val result = withTimeout(25000L) {
                         val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
                         val body = JSONObject().apply {
@@ -265,13 +263,12 @@ object NativePipelineEngine {
                         StreamChatResult(resultText, finalReasoning, finalToolCalls)
                     }
 
-                    // 请求成功，更新全局当前模型
                     currentModel = targetModel
+                    Log.d(TAG, "Request success with model ${provider.model}")
                     return@withContext result
                 } catch (e: Exception) {
-                    Log.w("NativePipelineEngine", "Model ${provider.model} attempt $attempt error: ${e.message}")
+                    Log.w(TAG, "Model ${provider.model} attempt $attempt error: ${e.message}")
                     lastErr = e
-                    // 第一次失败，短暂休眠 500ms 后进行第 2 次重试
                     if (attempt == 1) {
                         try { Thread.sleep(500) } catch (_: Exception) {}
                     }
@@ -282,7 +279,6 @@ object NativePipelineEngine {
                 }
             }
 
-            // 该模型重试 1 次后仍失败，自动 fallback 到下一个模型并提示 1s
             if (mIdx + 1 < modelsToTry.size) {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
@@ -292,7 +288,7 @@ object NativePipelineEngine {
                     "muse-spark-1.2" -> "MuseSpark"
                     else -> nextModel
                 }
-                Log.i("NativePipelineEngine", "Fallback to next model: $nextDisplayName")
+                Log.i(TAG, "Fallback to next model: $nextDisplayName")
                 currentModel = nextModel
                 withContext(Dispatchers.Main) {
                     onModelFallbackHint?.invoke(nextDisplayName)
@@ -313,6 +309,7 @@ object NativePipelineEngine {
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
         // ================= Stage 1: 题目提取 =================
+        Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "system")
@@ -337,6 +334,7 @@ object NativePipelineEngine {
 
         val stage1Result = streamMessages(context, stage1Messages)
         val rawQuestions = stage1Result.content.ifEmpty { stage1Result.reasoning }
+        Log.d(TAG, "Stage 1 raw result: $rawQuestions")
 
         if (isStrictNoQuestion(rawQuestions)) {
             return@withContext "未识别到题目"
@@ -351,6 +349,7 @@ object NativePipelineEngine {
         onStage1QuestionsUpdate(questions)
 
         // ================= Stage 2: 多题并发求解 =================
+        Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
         var totalToolCalls = 0
@@ -401,7 +400,10 @@ object NativePipelineEngine {
             }.awaitAll()
         }
 
-        // ================= Stage 3: AR 排版提炼 (带超时熔断与直接呈现兜底) =================
+        Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
+
+        // ================= Stage 3: AR 排版提炼 =================
+        Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
                 appendLine("【题号 ${item.id}】")
@@ -429,13 +431,15 @@ object NativePipelineEngine {
                 }
             }
             if (finalResult.content.isNotBlank()) {
+                Log.d(TAG, "Stage 3 summary succeeded, content length: ${finalResult.content.length}")
                 return@withContext finalResult.content
             }
         } catch (e: Exception) {
-            Log.w("NativePipelineEngine", "Stage 3 summary failed, fallback to Stage 2 answers", e)
+            Log.w(TAG, "Stage 3 summary failed, fallback to Stage 2 answers: ${e.message}", e)
         }
 
-        // 兜底直出：如果 Stage 3 超时或网络异常，直接将 Stage 2 的完整解答直通呈现，绝不卡死
+        // 兜底直出：如果 Stage 3 出现异常或超时，直接将 Stage 2 的完整解答直通呈现，绝不卡死
+        Log.d(TAG, "Applying Stage 2 direct answers fallback...")
         val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n\n") {
             "**${it.id}.** ${it.answer}"
         }
