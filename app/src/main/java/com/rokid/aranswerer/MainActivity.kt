@@ -42,11 +42,11 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 隐藏右上角设置图标 (透明无可见元素，但保留右上角触摸打开设置面板)；
- * 2. 电量文字调暗 (0x7700ff66)，电量右侧显示当前步骤 step (如 "52 1" 或 "60 2")；
- * 3. 彻底解决 Stage 2 题目完成后 Stage 3 无反应/卡死的问题 (带熔断与直出兜底)；
- * 4. 25s 响应超时检测 + 单模型重试 1 次 + 失败自动 fallback 下一个模型并在顶部提示 1s；
- * 5. 统一手势：上滑切模型，下滑拍照，长按拍照，双击退出。
+ * 1. 严格进入 Stage 1 (显示 "52 1")，出一道题立刻实时显示一道题；
+ * 2. Stage 2 多题并发求解，双列更新状态 ("52 2")；
+ * 3. Stage 3 AR 总结与渲染 ("52 3")，最终答案严格保留原版题目实际题号；
+ * 4. 25s 超时重试 + 失败自动 fallback 下一个模型 + 顶部 1s 提示；
+ * 5. 暗色电量 + 隐藏右上角设置图标 (隐形触摸依然有效)。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -75,7 +75,6 @@ class MainActivity : AppCompatActivity() {
     private var lastModelSwitchTime = 0L
     private val MODEL_SWITCH_DEBOUNCE_MS = 350L
 
-    // 触控板长按 400ms 触发拍照
     private val longPressToCaptureRunnable = Runnable {
         if (state == 0) {
             Log.d("ARAnswerer", "Touchpad 400ms LongPress confirmed -> enterPreview")
@@ -121,7 +120,7 @@ class MainActivity : AppCompatActivity() {
 
         // 1. 左上角：暗色电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
         batteryStepView = TextView(this).apply {
-            setTextColor(0x7700ff66.toInt()) // 调暗绿色
+            setTextColor(0x7700ff66.toInt())
             textSize = 13f
             setPadding(16, 12, 24, 16)
             isClickable = false
@@ -143,14 +142,13 @@ class MainActivity : AppCompatActivity() {
         }
         safeContent.addView(status, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.TOP or Gravity.START })
 
-        // 注册模型 Fallback 顶部 1s 提示监听
         NativePipelineEngine.onModelFallbackHint = { fallbackModelName ->
             runOnUiThread {
                 showModelFallbackNotification(fallbackModelName)
             }
         }
 
-        // 3. 触控手势探测器 (上滑切模型，下滑拍照，双击退出)
+        // 3. 触控手势探测器
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (vy < -120 || vx > 120) {
@@ -176,7 +174,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 4. 硬件输入分发器 (触控板与外接戒指统一处理)
+        // 4. 硬件输入分发器
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
@@ -212,24 +210,24 @@ class MainActivity : AppCompatActivity() {
         status.visibility = View.VISIBLE
         status.text = "切换至 $modelName"
         handler.removeCallbacks(hideModelStatusRunnable)
-        handler.postDelayed(hideModelStatusRunnable, 1000) // 严格提示 1s
+        handler.postDelayed(hideModelStatusRunnable, 1000)
     }
 
     private fun handleSwipeUp() {
         if (state == 0) {
-            switchModel(1) // 休眠态上滑 -> 切换下一个大模型
+            switchModel(1)
         } else if (state == 3) {
-            katexWebView?.scrollBy(0, -160) // 答案态上滑 -> 向上滚动
+            katexWebView?.scrollBy(0, -160)
         }
     }
 
     private fun handleSwipeDown() {
         if (state == 0) {
-            enterPreview() // 休眠态下滑 -> 直接进入拍照取景！
+            enterPreview()
         } else if (state == 1) {
-            triggerHardwareCapture() // 取景态下滑 -> 提前抓拍
+            triggerHardwareCapture()
         } else if (state == 3) {
-            katexWebView?.scrollBy(0, 160) // 答案态下滑 -> 向下滚动
+            katexWebView?.scrollBy(0, 160)
         }
     }
 
@@ -279,7 +277,6 @@ class MainActivity : AppCompatActivity() {
         val settingsTouchAreaWidth = 90 * density
         val settingsTouchAreaHeight = 70 * density
 
-        // 右上角无图标隐形区域：手指触摸点击右上角仍然打开设置面板
         if (ev.x >= (screenW - settingsTouchAreaWidth) && ev.y <= settingsTouchAreaHeight) {
             if (ev.action == MotionEvent.ACTION_UP) {
                 handler.removeCallbacks(longPressToCaptureRunnable)
@@ -331,9 +328,6 @@ class MainActivity : AppCompatActivity() {
         return super.onKeyDown(c, e)
     }
 
-    /**
-     * 进入拍摄取景模式
-     */
     private fun enterPreview() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
@@ -383,7 +377,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun solve(bytes: ByteArray) {
         state = 2
-        updateBatteryStepDisplay(step = 2)
+        // 进入 Stage 1: 题目提取中 (显示 Step 1)
+        updateBatteryStepDisplay(step = 1)
         previewCard.visibility = View.GONE
         
         lifecycleScope.launch(Dispatchers.IO) {
@@ -391,7 +386,7 @@ class MainActivity : AppCompatActivity() {
             cameraHelper = null
         }
 
-        status.text = ""
+        status.text = "正在提取题目..."
         status.visibility = View.VISIBLE
         contentContainer.visibility = View.VISIBLE
         contentContainer.removeAllViews()
@@ -401,6 +396,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
             setLineSpacing(4f, 1.2f)
             setBackgroundColor(Color.BLACK)
+            text = "正在解析题目..."
         }
         contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
 
@@ -412,7 +408,8 @@ class MainActivity : AppCompatActivity() {
                     onStage1QuestionsUpdate = { qs ->
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 1)
-                            stageTextView.text = qs.joinToString("\n") { "${it.id}. ${it.content.trim()}" }
+                            status.text = "已提取 ${qs.size} 道题目"
+                            stageTextView.text = qs.joinToString("\n\n") { "${it.id}. ${it.content.trim()}" }
                         }
                     },
                     onStage2DoubleColumnUpdate = { ss, topStatusText ->

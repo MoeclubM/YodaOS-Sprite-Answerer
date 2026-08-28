@@ -16,6 +16,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.regex.Pattern
 
 data class ExtractedQuestion(
     val id: String,
@@ -67,7 +68,7 @@ object NativePipelineEngine {
 
     private const val STAGE1_PROMPT =
         "提取图片中的所有题目,严禁解答。\n" +
-        "按题目顺序输出 JSON 数组,每项包含题号 id 和完整题目内容 content:\n" +
+        "务必按题目在图片中的实际题号输出 JSON 数组,每项包含实际题号 id (如 \"1\", \"2\", \"3(1)\", \"4\") 和完整题目内容 content:\n" +
         "[{\"id\": \"1\", \"content\": \"题目1完整内容...\"}, {\"id\": \"2\", \"content\": \"题目2完整内容...\"}]\n" +
         "若无题目则输出 NO_QUESTION。"
 
@@ -77,8 +78,9 @@ object NativePipelineEngine {
 
     private const val STAGE3_PROMPT =
         "整理为极简 AR 排版:\n" +
-        "1. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁写任何解析或多余说明。\n" +
-        "2. 解答题/大题:只保留核心拿分步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
+        "1. 务必严格保留输入中各题的原版实际题号(如原题号为 1, 2, 3 就必须输出 1. , 2. , 3. ，严禁私自重新编号或更改题号)。\n" +
+        "2. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁写任何解析或多余说明。\n" +
+        "3. 解答题/大题:只保留核心拿分步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
 
     private val TOOLS_SCHEMA = JSONArray().apply {
         put(JSONObject().apply {
@@ -298,6 +300,27 @@ object NativePipelineEngine {
         throw lastErr ?: RuntimeException("请求失败，请检查网络或 API Key")
     }
 
+    /**
+     * 实时增量解析 Stage 1 流式吐出的单道题目 (实现出一道显示一道)
+     */
+    private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
+        val list = mutableListOf<ExtractedQuestion>()
+        try {
+            val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])", Pattern.DOTALL)
+            val matcher = jsonObjectPattern.matcher(rawStreamText)
+            var count = 0
+            while (matcher.find()) {
+                val id = matcher.group(1)?.trim() ?: "${count + 1}"
+                val content = matcher.group(2)?.replace("\\n", "\n")?.replace("\\\"", "\"")?.trim() ?: ""
+                if (content.isNotEmpty()) {
+                    list.add(ExtractedQuestion(id, content, count))
+                    count++
+                }
+            }
+        } catch (_: Exception) {}
+        return list
+    }
+
     suspend fun runThreeStagePipeline(
         context: Context,
         jpegBytes: ByteArray,
@@ -308,7 +331,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 =================
+        // ================= Stage 1: 题目提取 (支持流式出一题显示一题) =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -332,7 +355,18 @@ object NativePipelineEngine {
             })
         }
 
-        val stage1Result = streamMessages(context, stage1Messages)
+        var lastDispatchedCount = 0
+        val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
+            // 实时流式解析：每提取出一道题目立即通知 UI 增量呈现！
+            val partial = parseIncrementalQuestions(streamAcc)
+            if (partial.size > lastDispatchedCount) {
+                lastDispatchedCount = partial.size
+                withContext(Dispatchers.Main) {
+                    onStage1QuestionsUpdate(partial)
+                }
+            }
+        }
+
         val rawQuestions = stage1Result.content.ifEmpty { stage1Result.reasoning }
         Log.d(TAG, "Stage 1 raw result: $rawQuestions")
 
@@ -346,6 +380,7 @@ object NativePipelineEngine {
             return@withContext fallbackSolved
         }
 
+        // 最终确认 Stage 1 完整题目列表
         onStage1QuestionsUpdate(questions)
 
         // ================= Stage 2: 多题并发求解 =================
@@ -402,12 +437,12 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 =================
+        // ================= Stage 3: AR 排版提炼 (严格保留实际原题号) =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
                 appendLine("【题号 ${item.id}】")
-                appendLine("题目: ${item.content}")
+                appendLine("原题: ${item.content}")
                 appendLine("解答: ${item.answer}")
                 appendLine()
             }
@@ -438,7 +473,7 @@ object NativePipelineEngine {
             Log.w(TAG, "Stage 3 summary failed, fallback to Stage 2 answers: ${e.message}", e)
         }
 
-        // 兜底直出：如果 Stage 3 出现异常或超时，直接将 Stage 2 的完整解答直通呈现，绝不卡死
+        // 兜底直出：严格按照每道题目的实际原题号拼接呈现
         Log.d(TAG, "Applying Stage 2 direct answers fallback...")
         val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n\n") {
             "**${it.id}.** ${it.answer}"
