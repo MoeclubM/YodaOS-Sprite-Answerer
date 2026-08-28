@@ -41,19 +41,16 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
- * 统一手势交互架构：
- * 1. 彻底去除所有单击拍照 (杜绝误触)；
- * 2. 上滑 (Swipe Up / Swipe Back) -> 切换模型 (休眠态) / 向上翻页 (答案态)；
- * 3. 下滑 (Swipe Down / Swipe Forward) -> 拍照 (休眠态) / 提前抓拍 (取景态) / 向下翻页 (答案态)；
- * 4. 长按 400ms -> 拍照；
- * 5. 双击 -> 退出到休眠；
- * 6. 设置面板 -> 右上角 ⚙ 独立触摸呼出。
+ * 完整对齐要求：
+ * 1. 隐藏右上角设置图标 (透明无可见元素，但保留右上角触摸打开设置面板)；
+ * 2. 电量文字调暗 (0x7700ff66)，电量右侧显示当前步骤 step (如 "52 1" 或 "60 2")；
+ * 3. 彻底解决 Stage 2 题目完成后 Stage 3 无反应/卡死的问题 (带熔断与直出兜底)；
+ * 4. 统一手势：上滑切模型，下滑拍照，长按拍照，双击退出。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
     private lateinit var safeContent: FrameLayout
-    private lateinit var battery: TextView
-    private lateinit var settingsIcon: TextView
+    private lateinit var batteryStepView: TextView
     private lateinit var status: TextView
     private lateinit var contentContainer: FrameLayout
     private lateinit var previewCard: FrameLayout
@@ -63,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     private var cameraHelper: NativeCamera2Helper? = null
 
     private var state = 0 // 0 sleep, 1 preview, 2 solving, 3 answer
+    private var currentStep = 0 // 当前阶段 step (0=休眠, 1=提取, 2=解答, 3=排版答案)
+
     private var input: BareGlassesInputDispatcher? = null
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var gestureDetector: GestureDetector
@@ -119,35 +118,21 @@ class MainActivity : AppCompatActivity() {
             rightMargin = (10 * density).toInt()
         })
 
-        // 1. 左上角：纯电量展示
-        battery = TextView(this).apply {
-            setTextColor(0xff00ff66.toInt())
-            textSize = 14f
-            text = "${BatteryHelper.level(this@MainActivity)}"
+        // 1. 左上角：暗色电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
+        batteryStepView = TextView(this).apply {
+            setTextColor(0x7700ff66.toInt()) // 调暗绿色
+            textSize = 13f
             setPadding(16, 12, 24, 16)
             isClickable = false
             isFocusable = false
             isFocusableInTouchMode = false
         }
-        safeContent.addView(battery, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        safeContent.addView(batteryStepView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
         })
-
-        // 2. 右上角：独立的设置齿轮 ⚙ (仅真实手指触摸点击打开设置)
-        settingsIcon = TextView(this).apply {
-            text = "⚙"
-            setTextColor(0x8800ff66.toInt())
-            textSize = 16f
-            setPadding(24, 12, 20, 16)
-            isClickable = false
-            isFocusable = false
-            isFocusableInTouchMode = false
-        }
-        safeContent.addView(settingsIcon, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.TOP or Gravity.END
-        })
+        updateBatteryStepDisplay()
         
-        // 3. 状态栏
+        // 2. 状态栏
         status = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 13f
@@ -157,15 +142,13 @@ class MainActivity : AppCompatActivity() {
         }
         safeContent.addView(status, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.TOP or Gravity.START })
 
-        // 4. 触控手势探测器 (上滑切模型，下滑拍照，双击退出)
+        // 3. 触控手势探测器 (上滑切模型，下滑拍照，双击退出)
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                // 上滑 (vy < -120 或 vx > 120 前滑/上滑)
                 if (vy < -120 || vx > 120) {
                     handleSwipeUp()
                     return true
                 }
-                // 下滑 (vy > 120 或 vx < -120 后滑/下滑)
                 if (vy > 120 || vx < -120) {
                     handleSwipeDown()
                     return true
@@ -185,7 +168,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         goSleep()
 
-        // 5. 硬件输入分发器 (触控板与外接戒指统一处理)
+        // 4. 硬件输入分发器 (触控板与外接戒指统一处理)
         input = BareGlassesInputDispatcher(
             context = this,
             onTriggerCapture = {
@@ -207,6 +190,14 @@ class MainActivity : AppCompatActivity() {
         try { if (!Settings.canDrawOverlays(this)) startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
         try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
+    }
+
+    private fun updateBatteryStepDisplay(step: Int? = null) {
+        if (step != null) {
+            currentStep = step
+        }
+        val level = BatteryHelper.level(this)
+        batteryStepView.text = if (currentStep > 0) "$level $currentStep" else "$level"
     }
 
     private fun handleSwipeUp() {
@@ -270,10 +261,10 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         val density = resources.displayMetrics.density
         val screenW = resources.displayMetrics.widthPixels.toFloat()
-        val settingsTouchAreaWidth = 80 * density
-        val settingsTouchAreaHeight = 60 * density
+        val settingsTouchAreaWidth = 90 * density
+        val settingsTouchAreaHeight = 70 * density
 
-        // 仅在手指点击右上角 ⚙ 设置图标区域时打开设置面板
+        // 右上角无图标隐形区域：手指触摸点击右上角仍然打开设置面板
         if (ev.x >= (screenW - settingsTouchAreaWidth) && ev.y <= settingsTouchAreaHeight) {
             if (ev.action == MotionEvent.ACTION_UP) {
                 handler.removeCallbacks(longPressToCaptureRunnable)
@@ -289,7 +280,6 @@ class MainActivity : AppCompatActivity() {
             MotionEvent.ACTION_DOWN -> {
                 startX = ev.x
                 startY = ev.y
-                // 仅长按 400ms 触发拍照，快速抬起/滑动立即取消
                 if (state == 0) {
                     handler.postDelayed(longPressToCaptureRunnable, 400)
                 }
@@ -335,6 +325,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         state = 1
+        updateBatteryStepDisplay(step = 1)
         contentContainer.visibility = View.GONE
         previewCard.visibility = View.VISIBLE
         status.visibility = View.VISIBLE
@@ -377,6 +368,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun solve(bytes: ByteArray) {
         state = 2
+        updateBatteryStepDisplay(step = 2)
         previewCard.visibility = View.GONE
         
         lifecycleScope.launch(Dispatchers.IO) {
@@ -404,27 +396,32 @@ class MainActivity : AppCompatActivity() {
                     bytes,
                     onStage1QuestionsUpdate = { qs ->
                         withContext(Dispatchers.Main) {
+                            updateBatteryStepDisplay(step = 1)
                             stageTextView.text = qs.joinToString("\n") { "${it.id}. ${it.content.trim()}" }
                         }
                     },
                     onStage2DoubleColumnUpdate = { ss, topStatusText ->
                         withContext(Dispatchers.Main) {
+                            updateBatteryStepDisplay(step = 2)
                             status.text = topStatusText
                             stageTextView.text = ss.sortedBy { it.originalOrder }.chunked(2).joinToString("\n") { row -> row.joinToString("  ") { "[${it.id}][T:${it.toolCount}]${if (it.isDone) "√" else "..."}" } }
                         }
                     },
                     onStage3StreamToken = { streamText ->
                         withContext(Dispatchers.Main) {
+                            updateBatteryStepDisplay(step = 3)
                             status.visibility = View.GONE
                             ensureKatexWebViewLoaded().setMarkdownText(streamText)
                         }
                     }
                 )
                 state = 3
+                updateBatteryStepDisplay(step = 3)
                 status.visibility = View.GONE
                 ensureKatexWebViewLoaded().setMarkdownText(result)
             } catch (e: Exception) {
                 state = 3
+                updateBatteryStepDisplay(step = 3)
                 status.visibility = View.VISIBLE
                 status.text = "解题失败: ${e.message}"
             }
@@ -444,6 +441,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun goSleep() {
         state = 0
+        updateBatteryStepDisplay(step = 0)
         handler.removeCallbacksAndMessages(null)
         status.visibility = View.GONE
         contentContainer.visibility = View.GONE
@@ -464,7 +462,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        battery.text = "${BatteryHelper.level(this)}"
+        updateBatteryStepDisplay()
     }
 
     override fun onDestroy() {
