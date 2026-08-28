@@ -42,12 +42,10 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 彻底移除所有冗余的"正在提取/解析题目"的铺垫文字提示，界面极简纯粹；
- * 2. 真正的流式零缓冲输出：Stage 1 题目出一道立刻在屏幕上渲染一道；
- * 3. Stage 2 多题并发求解状态实时双列展示 ("52 2")；
- * 4. Stage 3 最终答案流式排版呈现 ("52 3")，题号严格保留原题实际编号；
- * 5. 25s 超时重试 + 自动 Fallback 模型 + 顶部 1s 提示；
- * 6. 暗色电量 + 隐藏右上角设置图标 (隐形触摸依然有效)。
+ * 1. 紧凑 AR 字体与行高排版，公式过长自动换行，杜绝横向超出屏幕；
+ * 2. 答案呈现后 2.5s 开启平滑自动向下滚动；
+ * 3. 触控板/外接戒指上滑/下滑 100% 触发平滑滚动翻页；
+ * 4. 双击随时返回纯黑休眠。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -218,7 +216,8 @@ class MainActivity : AppCompatActivity() {
         if (state == 0) {
             switchModel(1)
         } else if (state == 3) {
-            katexWebView?.scrollBy(0, -160)
+            // 答案呈现态上滑 -> 向上平滑滚动 180px
+            katexWebView?.smoothScroll(-180)
         }
     }
 
@@ -228,7 +227,8 @@ class MainActivity : AppCompatActivity() {
         } else if (state == 1) {
             triggerHardwareCapture()
         } else if (state == 3) {
-            katexWebView?.scrollBy(0, 160)
+            // 答案呈现态下滑 -> 向下平滑滚动 180px
+            katexWebView?.smoothScroll(180)
         }
     }
 
@@ -386,7 +386,6 @@ class MainActivity : AppCompatActivity() {
             cameraHelper = null
         }
 
-        // 彻底移除任何文字铺垫提示，直接保持纯净空白等待流式内容
         status.visibility = View.GONE
         status.text = ""
         contentContainer.visibility = View.VISIBLE

@@ -17,34 +17,57 @@
             background-color: #000000;
             color: #00ff66;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-            font-size: 15px;
-            line-height: 1.5;
-            padding: 4px 6px 12px 6px;
+            /* 紧凑适宜的 AR 眼镜阅读字号与行高 */
+            font-size: 13.5px;
+            line-height: 1.45;
+            padding: 2px 4px 60px 4px;
             overflow-x: hidden;
             word-wrap: break-word;
+            word-break: break-word;
             white-space: pre-wrap;
         }
         p, div, span, li, h1, h2, h3, table, td, th {
             color: #00ff66 !important;
         }
+        /* 核心公式自适应换行与横向保护 */
         .katex {
             color: #00ff66 !important;
-            font-size: 1.15em;
+            font-size: 1.05em;
+            white-space: normal !important;
+            word-wrap: break-word !important;
+        }
+        .katex-html {
+            white-space: normal !important;
+            display: inline-block !important;
+            max-width: 100% !important;
+            overflow-wrap: anywhere !important;
         }
         .katex-display {
-            margin: 0.4em 0 !important;
+            margin: 0.3em 0 !important;
+            max-width: 100% !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            white-space: normal !important;
+        }
+        .katex-display > .katex {
+            white-space: normal !important;
+            text-align: left !important;
         }
         .bold-title {
             font-weight: bold;
             color: #00ff66;
-            margin-top: 6px;
+            margin-top: 4px;
             margin-bottom: 2px;
+            display: inline-block;
         }
     </style>
 </head>
 <body>
     <div id="content"></div>
     <script>
+        var autoScrollTimer = null;
+        var isAutoScrolling = false;
+
         function parseSimpleMarkdown(md) {
             if (!md) return '';
             var lines = md.split('\n');
@@ -80,7 +103,47 @@
             } catch (e) {
                 container.innerText = md;
             }
+
+            // 渲染完成 2.5 秒后开启轻量自动平滑向下滚动
+            startAutoScrollIfNeeded();
         }
+
+        function startAutoScrollIfNeeded() {
+            if (autoScrollTimer) {
+                clearInterval(autoScrollTimer);
+                autoScrollTimer = null;
+            }
+            // 延时 2.5 秒让用户先阅读顶部内容，若内容超出屏幕高度则以 1.5px 步长缓慢平滑自动向下滚动
+            setTimeout(function() {
+                var scrollHeight = document.documentElement.scrollHeight || document.body.scrollHeight;
+                var clientHeight = window.innerHeight;
+                if (scrollHeight > clientHeight + 30) {
+                    isAutoScrolling = true;
+                    autoScrollTimer = setInterval(function() {
+                        if (!isAutoScrolling) return;
+                        var current = window.pageYOffset || document.documentElement.scrollTop;
+                        var maxScroll = (document.documentElement.scrollHeight || document.body.scrollHeight) - window.innerHeight;
+                        if (current >= maxScroll - 2) {
+                            clearInterval(autoScrollTimer);
+                            autoScrollTimer = null;
+                            isAutoScrolling = false;
+                        } else {
+                            window.scrollBy({ top: 1.5, behavior: 'auto' });
+                        }
+                    }, 40);
+                }
+            }, 2500);
+        }
+
+        // 手动触控滚动接口 (供 Android WebView evaluateJavascript 调用)
+        window.manualScroll = function(deltaY) {
+            // 用户一旦手动干预滚动，暂停自动滚动 4 秒
+            isAutoScrolling = false;
+            window.scrollBy({ top: deltaY, behavior: 'smooth' });
+            setTimeout(function() {
+                isAutoScrolling = true;
+            }, 4000);
+        };
     </script>
 </body>
 </html>
