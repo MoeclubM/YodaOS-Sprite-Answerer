@@ -53,7 +53,6 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
-    // 严选真实可用且支持推理的模型列表 (Gemini, DeepSeek 官方通道, Luna)
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
         "deepseek-v4-flash-vision-exp",
@@ -74,11 +73,13 @@ object NativePipelineEngine {
         "请解答本题目。默认提供基础检索与代数计算工具。\n" +
         "若本题需要微积分、复变函数、信号系统、电磁波、几何统计等领域的专用计算工具,请调用相关工具辅助推导并输出最终答案。"
 
+    // 强化紧凑排版提示词：禁止多余空行，每题紧凑排列
     private const val STAGE3_PROMPT =
-        "整理为极简 AR 排版:\n" +
-        "1. 务必严格保留输入中各题的原版实际题号(如原题号为 1, 2, 3 就必须输出 1. , 2. , 3. ，严禁私自重新编号或更改题号)。\n" +
-        "2. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁写任何解析或多余说明。\n" +
-        "3. 解答题/大题:只保留核心拿分步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
+        "整理为极紧凑 AR 屏幕排版:\n" +
+        "1. 务必严格保留输入中各题的原版实际题号(如原题号为 1, 2 就必须输出 1. , 2. ，严禁私自更改题号)。\n" +
+        "2. 排版极致紧凑：严禁在题目或解答之间输出连续空行或无意义的换行分段，单题只保留核心结论与拿分步骤。\n" +
+        "3. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁多余解析。\n" +
+        "4. 解答题/大题:只保留核心步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
 
     private val TOOLS_SCHEMA = JSONArray().apply {
         put(JSONObject().apply {
@@ -341,7 +342,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 (优先使用具备顶级多模态能力的视觉模型) =================
+        // ================= Stage 1: 题目提取 =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -366,7 +367,6 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
-        // Stage 1 提取优先使用多模态视觉模型
         val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
             val partial = parseIncrementalQuestions(streamAcc)
             if (partial.size > lastDispatchedCount) {
@@ -392,7 +392,7 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 (支持 Luna, DeepSeek, Gemini 并行深度推理与工具调用) =================
+        // ================= Stage 2: 多题并发求解 =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
@@ -446,14 +446,13 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 =================
+        // ================= Stage 3: AR 排版提炼 (紧凑单行拼接) =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
                 appendLine("【题号 ${item.id}】")
-                appendLine("原题: ${item.content}")
-                appendLine("解答: ${item.answer}")
-                appendLine()
+                appendLine("原题: ${item.content.trim()}")
+                appendLine("解答: ${item.answer.trim()}")
             }
         }
 
@@ -482,9 +481,9 @@ object NativePipelineEngine {
             Log.w(TAG, "Stage 3 summary failed, fallback to Stage 2 answers: ${e.message}", e)
         }
 
-        Log.d(TAG, "Applying Stage 2 direct answers fallback...")
-        val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n\n") {
-            "**${it.id}.** ${it.answer}"
+        // 兜底直出：紧凑拼接
+        val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n") {
+            "**${it.id}.** ${it.answer.trim()}"
         }
         withContext(Dispatchers.Main) {
             onStage3StreamToken(directAnswers)
