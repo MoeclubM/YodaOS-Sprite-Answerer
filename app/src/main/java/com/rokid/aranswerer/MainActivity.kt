@@ -42,10 +42,10 @@ import kotlin.math.abs
 
 /**
  * 完整对齐要求：
- * 1. 严格对齐切换模型/进入拍摄的滑动识别通道：无论是触控板手势、外接戒指还是硬件按键，在答案态 (state=3) 下统一触发向上/向下平滑滚动；
- * 2. 答案态直接打通原生 pageUp/pageDown、scrollBy 与 JS scrollTop 三通道滚动调度；
- * 3. 完美保留 0.04em 标准纤细居中分数线；
- * 4. 极缓自动平滑微步向下推移 (0.35px/50ms)。
+ * 1. 严格支持鼠标拖动、触控板拖拽与手势滑动：答案态下 (state=3) 直接将 Touch 事件分发给系统与 WebView 原生处理，100% 顺畅上下拖动滚动；
+ * 2. 严格对齐切换模型/进入拍摄的滑动识别机制，在答案态下同样直接驱动向上/向下翻页滚动；
+ * 3. 完美保留 0.04em 纤细居中标准分数线；
+ * 4. 极缓自动平滑滚动。
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var root: FrameLayout
@@ -92,8 +92,6 @@ class MainActivity : AppCompatActivity() {
 
         root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
-            isClickable = false
-            isFocusable = false
         }
         safeContent = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         root.addView(safeContent, FrameLayout.LayoutParams(-1, -1).apply { bottomMargin = 214 })
@@ -147,7 +145,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器：严格对齐切换模型/进入拍摄的滑动识别标准
+        // 3. 触控手势探测器
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (vy < -60 || vx > 60) {
@@ -223,7 +221,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 上滑操作：休眠态切模型，答案态向上滚动翻页
+     * 上滑操作：休眠态切模型，答案态向上平滑翻页
      */
     private fun handleSwipeUp() {
         if (state == 0) {
@@ -235,7 +233,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 下滑操作：休眠态进入拍摄，取景态提前抓拍，答案态向下滚动翻页
+     * 下滑操作：休眠态进入拍摄，取景态提前抓拍，答案态向下平滑翻页
      */
     private fun handleSwipeDown() {
         if (state == 0) {
@@ -304,6 +302,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 优先将手势事件喂入探测器
         gestureDetector.onTouchEvent(ev)
 
         when (ev.action) {
@@ -324,7 +323,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        return true
+        // 关键：在答案态 (state=3) 下直接将触摸/鼠标拖拽事件完整传递给系统的原生分发树，让 WebView 自行响应滑动手势与鼠标拖拽
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {

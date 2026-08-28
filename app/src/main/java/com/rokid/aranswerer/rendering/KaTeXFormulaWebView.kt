@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Color
 import android.util.AttributeSet
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
@@ -13,9 +14,8 @@ import android.webkit.WebViewClient
 
 /**
  * 专为 Rokid Glasses 裸机定制的 100% 全离线 KaTeX 数学与 Markdown 渲染器
- * 1. 采用本地 assets 离线加载；
- * 2. 增强多通道硬件与 JS 滚动，直接驱动 pageUp / pageDown / scrollBy / JS scrollTop；
- * 3. 完美兼容标准 LaTeX 纤细分数线与公式排版。
+ * 1. 开启全部硬件与软件滚动能力，支持原生鼠标直接拖拽、触控板触摸滑动与 JS 双向驱动；
+ * 2. 完美适配全离线 KaTeX 0.16.8 渲染引擎。
  */
 class KaTeXFormulaWebView @JvmOverloads constructor(
     context: Context,
@@ -30,6 +30,11 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
         setBackgroundColor(Color.BLACK)
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
+        // 关键：允许获取焦点与触控滚动
+        isFocusable = true
+        isFocusableInTouchMode = true
+        isClickable = true
+
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -38,14 +43,18 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
             allowFileAccessFromFileURLs = true
             allowUniversalAccessFromFileURLs = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            useWideViewPort = false
+            useWideViewPort = true
             loadWithOverviewMode = true
             textZoom = 100
+            // 开启内置缩放控制与手势滚动
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
         }
 
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
-        overScrollMode = View.OVER_SCROLL_NEVER
+        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
         webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
@@ -81,20 +90,20 @@ class KaTeXFormulaWebView @JvmOverloads constructor(
     }
 
     /**
-     * 强力多通道滚动调度：同时触发 pageUp/pageDown、原生 scrollBy 与 JS manualScroll
+     * 强力多通道手动平滑滚动调度
      */
     fun smoothScroll(deltaY: Int) {
         post {
-            // 1. 调用 JS 内部的 manualScroll 与 window.scrollBy
-            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); } else { window.scrollBy(0, $deltaY); }", null)
+            // 1. JS DOM 精准滚动
+            evaluateJavascript("if (typeof window.manualScroll === 'function') { window.manualScroll($deltaY); }", null)
             
-            // 2. 原生 WebView 滚动
+            // 2. 原生 WebView 硬件平滑滚动
             scrollBy(0, deltaY)
             
-            // 3. 原生 pageUp / pageDown 辅助触发
-            if (deltaY > 0) {
+            // 3. 原生 pageUp / pageDown 辅助翻页
+            if (deltaY > 50) {
                 pageDown(false)
-            } else if (deltaY < 0) {
+            } else if (deltaY < -50) {
                 pageUp(false)
             }
         }
