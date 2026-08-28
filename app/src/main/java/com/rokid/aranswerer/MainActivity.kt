@@ -1,10 +1,8 @@
 package com.rokid.aranswerer
 
 import android.Manifest
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -23,6 +21,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.TextureView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -89,7 +88,7 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.BLACK)
         }
         safeContent = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        root.addView(safeContent, FrameLayout.LayoutParams(-1, -1).apply { bottomMargin = 214 })
+        root.addView(safeContent, FrameLayout.LayoutParams(-1, -1))
 
         val density = resources.displayMetrics.density
         val previewW = (280 * density).toInt()
@@ -105,9 +104,10 @@ class MainActivity : AppCompatActivity() {
             visibility = View.VISIBLE
         }
         safeContent.addView(contentContainer, FrameLayout.LayoutParams(-1, -1).apply {
-            topMargin = (44 * density).toInt()
-            leftMargin = (10 * density).toInt()
-            rightMargin = (10 * density).toInt()
+            topMargin = (36 * density).toInt()
+            leftMargin = (6 * density).toInt()
+            rightMargin = (6 * density).toInt()
+            bottomMargin = (12 * density).toInt()
         })
 
         // 预先常驻挂载 KaTeXFormulaWebView
@@ -178,6 +178,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         setContentView(root)
+        goSleep()
 
         // 4. 硬件输入分发器
         input = BareGlassesInputDispatcher(
@@ -203,38 +204,6 @@ class MainActivity : AppCompatActivity() {
         try { if (!Settings.canDrawOverlays(this)) startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
         try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
-
-        if (intent != null && intent.hasExtra("test_render")) {
-            handleIntentCommands(intent)
-        } else {
-            goSleep()
-        }
-    }
-
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIntentCommands(intent)
-    }
-
-    private fun handleIntentCommands(intent: Intent?) {
-        if (intent == null) return
-        val testRenderText = intent.getStringExtra("test_render")
-        if (!testRenderText.isNullOrEmpty()) {
-            Log.d("ARAnswerer", "handleIntentCommands -> test_render: length=${testRenderText.length}")
-            handler.removeCallbacksAndMessages(null)
-            state = 3
-            updateBatteryStepDisplay(step = 3)
-            status.visibility = View.GONE
-            contentContainer.visibility = View.VISIBLE
-            previewCard.visibility = View.GONE
-            ensureKatexWebViewLoaded().setMarkdownText(testRenderText)
-        }
-        val testScrollDelta = intent.getIntExtra("test_scroll", 0)
-        if (testScrollDelta != 0) {
-            Log.d("ARAnswerer", "handleIntentCommands -> test_scroll: delta=$testScrollDelta")
-            katexWebView?.smoothScroll(testScrollDelta)
-        }
     }
 
     private fun updateBatteryStepDisplay(step: Int? = null) {
@@ -515,11 +484,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             super.onBackPressed()
         }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        updateBatteryStepDisplay()
     }
 
     override fun onDestroy() {

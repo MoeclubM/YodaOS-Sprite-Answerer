@@ -17,6 +17,7 @@
         android:supportsRtl="true">
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:exported="true">
             <intent-filter>
@@ -24,7 +25,6 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- 普通持久 Service，不使用 foregroundServiceType -->
         <service
             android:name=".KeepAliveService"
             android:enabled="true"
