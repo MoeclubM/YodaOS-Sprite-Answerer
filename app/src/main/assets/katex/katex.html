@@ -29,7 +29,7 @@
             top: 0;
             left: 0;
             width: 100%;
-            padding: 2px 6px 180px 6px;
+            padding: 4px 8px 180px 8px;
             will-change: transform;
             transform: translateY(0px);
             transition: transform 0.15s ease-out;
@@ -39,12 +39,12 @@
             color: #00ff66;
         }
 
-        .para {
-            margin-bottom: 3px;
-            line-height: 1.5;
+        .line {
+            line-height: 1.55;
             font-size: 13.5px;
             word-wrap: break-word;
             word-break: break-word;
+            min-height: 1.2em;
         }
 
         .katex {
@@ -102,7 +102,7 @@
         .bold-title {
             font-weight: bold;
             color: #00ff66;
-            margin-top: 4px;
+            margin-top: 5px;
             margin-bottom: 2px;
             display: inline-block;
         }
@@ -122,17 +122,12 @@
         var wrapper = document.getElementById('scroll-wrapper');
         var container = document.getElementById('content');
 
-        function parseCompactMarkdown(md) {
-            if (!md) return '';
-            var lines = md.split('\n');
-            var html = [];
-            for (var i = 0; i < lines.length; i++) {
-                var line = lines[i];
-                if (!line || !line.trim()) continue;
-                line = line.replace(/\*\*(.*?)\*\*/g, '<span class="bold-title">$1</span>');
-                html.push('<div class="para">' + line + '</div>');
-            }
-            return html.join('');
+        // 安全 HTML 字符转义函数
+        function escapeHtml(text) {
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
         }
 
         function renderMarkdown(md) {
@@ -143,8 +138,37 @@
                 container.innerHTML = '';
                 return;
             }
+
             try {
-                container.innerHTML = parseCompactMarkdown(md);
+                // 1. 先按行拆分，处理 **加粗** 并将每行包裹进独立的 div
+                var lines = md.split(/\r?\n/);
+                var htmlParts = [];
+                var lastWasEmpty = false;
+
+                for (var i = 0; i < lines.length; i++) {
+                    var rawLine = lines[i];
+                    var trimmed = rawLine.trim();
+
+                    if (!trimmed) {
+                        if (!lastWasEmpty) {
+                            htmlParts.push('<div class="line" style="height: 6px;"></div>');
+                            lastWasEmpty = true;
+                        }
+                        continue;
+                    }
+                    lastWasEmpty = false;
+
+                    // 转义基础 HTML 实体保护文本
+                    var processed = escapeHtml(rawLine);
+                    // 转换 **加粗**
+                    processed = processed.replace(/\*\*(.*?)\*\*/g, '<span class="bold-title">$1</span>');
+
+                    htmlParts.push('<div class="line">' + processed + '</div>');
+                }
+
+                container.innerHTML = htmlParts.join('');
+
+                // 2. 调用 KaTeX 官方 auto-render 进行数学公式渲染
                 if (typeof renderMathInElement === 'function') {
                     renderMathInElement(container, {
                         delimiters: [
@@ -160,7 +184,7 @@
                 container.innerText = md;
             }
 
-            setTimeout(calculateMaxScroll, 100);
+            setTimeout(calculateMaxScroll, 120);
             startAutoScrollIfNeeded();
         }
 
