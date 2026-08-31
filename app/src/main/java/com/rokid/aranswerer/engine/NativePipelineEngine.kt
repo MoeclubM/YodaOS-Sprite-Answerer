@@ -20,7 +20,8 @@ import java.util.regex.Pattern
 data class ExtractedQuestion(
     val id: String,
     val content: String,
-    val originalOrder: Int
+    val hasImage: Boolean = false, // 是否附带图形/电路图/几何图/函数图像
+    val originalOrder: Int = 0
 )
 
 data class QuestionStatus(
@@ -53,7 +54,7 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
-    // 严选 4 款多模态与深度推理模型
+    // 严选 4 款 100% 原生多模态旗舰模型
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
         "muse-spark-1.2",
@@ -65,33 +66,34 @@ object NativePipelineEngine {
 
     var onModelFallbackHint: ((String) -> Unit)? = null
 
-    // 强化 Stage 1 针对大题、附带图表背景、多小问的完整提取提示词
+    // 强化 Stage 1: 提取题目 + 智能研判题目是否强依赖图片 (has_image)
     private const val STAGE1_PROMPT =
         "提取图片中的所有题目,严禁解答。\n" +
-        "【大题与多小问提取规则】:\n" +
-        "1. 务必按题目在图片中的实际题号输出 JSON 数组,每项包含实际题号 id (如 \"1\", \"2\", \"3\", \"4\") 和完整题目内容 content。\n" +
-        "2. 若题目附带图表描述、公共前置题干或包含多个小问(例如 (1)、(2)、(3))，必须将前置图表背景及所有小问完整整合在该题的 content 中，严禁遗漏图表信息，严禁将一个大题的多小问拆散成碎片！\n" +
+        "【大题、图表与多小问提取规则】:\n" +
+        "1. 务必按题目在图片中的实际题号输出 JSON 数组，每项包含实际题号 id、完整题目内容 content，以及该题是否包含或强依赖附图 has_image (布尔值 true/false)。\n" +
+        "2. 若题目附带几何图、电路图、坐标系、函数图象或实验装置图，请将 has_image 设为 true，并在 content 中保留题目对图的描述。\n" +
+        "3. 若题目包含多个小问 (如 (1)、(2)、(3))，必须将前置图表背景及所有小问完整整合在该题的 content 中，严禁遗漏拆散！\n" +
         "输出标准格式:\n" +
-        "[{\"id\": \"1\", \"content\": \"大题1完整题干与所有小问(1)(2)...\"}, {\"id\": \"2\", \"content\": \"大题2完整内容...\"}]\n" +
+        "[{\"id\": \"1\", \"content\": \"大题1完整题干与所有小问(1)(2)...\", \"has_image\": true}, {\"id\": \"2\", \"content\": \"题目2文字内容...\", \"has_image\": false}]\n" +
         "若无题目则输出 NO_QUESTION。"
 
-    // 强化 Stage 2 针对大题多小问的逐问分步推导提示词
+    // 强化 Stage 2: 导师级解题思路提示词
     private const val STAGE2_PROMPT =
         "请作为专业理科学科导师解答本题目。默认提供专业代数/微积分计算、科学知识库检索与联网工具。\n" +
         "【解题规范与专业思路】:\n" +
-        "1. 若本题包含多个小问(如 (1)、(2)、(3))，请按小问序号分步给出清晰解答(如 \"(1) ... (2) ...\")，确保每一问的拿分点与最终结论完整齐全。\n" +
-        "2. 高等数学/微积分: 遇到复杂定积分/微分方程优先调用 math_eval 验证边界与导数，严密推导极限与积分。\n" +
-        "3. 电磁场与电磁波: 结合题干图表与几何分布，严格基于麦克斯韦方程组(高斯定理、环路定理、波动方程)与本构关系展开，注意矢量方向与边界条件。\n" +
-        "4. 信号与系统: 灵活运用傅里叶/拉普拉斯/Z变换与卷积性质，注意收敛域 ROC 与稳定性判据。\n" +
-        "5. 若需查询公式定理或常数可调用 search_knowledge 或 web_search。"
+        "1. 若本题包含附图，请仔细结合图片中的几何拓扑、电路连接、场线分布或坐标标注进行严密推理。\n" +
+        "2. 若本题包含多个小问 (如 (1)、(2)、(3))，请按小问序号分步给出清晰解答 (如 \"(1) ... (2) ...\")，确保每一问的拿分点与最终结论完整齐全。\n" +
+        "3. 高等数学/微积分: 遇到复杂定积分/微分方程优先调用 math_eval 验证边界与导数，严密推导极限与积分。\n" +
+        "4. 电磁场与电磁波: 结合题干图表与几何分布，严格基于麦克斯韦方程组(高斯定理、环路定理、波动方程)与本构关系展开，注意矢量方向与边界条件。\n" +
+        "5. 信号与系统: 灵活运用傅里叶/拉普拉斯/Z变换与卷积性质，注意收敛域 ROC 与稳定性判据。\n" +
+        "6. 若需查询公式定理或常数可调用 search_knowledge 或 web_search。"
 
-    // 强化 Stage 3 针对大题多小问的 AR 紧凑排版提示词
     private const val STAGE3_PROMPT =
         "整理为极紧凑 AR 屏幕排版:\n" +
-        "1. 务必严格保留输入中各题的原版实际题号与小问序号(如题号 1 包含 (1)(2)，输出 \"1. (1)... (2)...\"，严禁更改题号)。\n" +
+        "1. 务必严格保留输入中各题的原版实际题号与小问序号 (如 \"1. (1)... (2)...\"，严禁更改题号)。\n" +
         "2. 排版极致紧凑：严禁输出连续空行或无意义的换行分段，单题只保留核心结论与核心推导拿分步骤。\n" +
-        "3. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁多余解析。\n" +
-        "4. 解答题/大题:只保留核心步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
+        "3. 选择题/填空题:只给答案,同行不换行 (如 \"1. A 2. B 3. 2π\"),严禁多余解析。\n" +
+        "4. 解答题/大题:只保留核心步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式 (支持 $$...$$ 与 $...$)。"
 
     private val TOOLS_SCHEMA = JSONArray().apply {
         put(JSONObject().apply {
@@ -326,7 +328,6 @@ object NativePipelineEngine {
                         StreamChatResult(resultText, finalReasoning, finalToolCalls)
                     }
 
-                    // 成功完成请求
                     currentModel = targetModel
                     Log.d(TAG, "Request success with model ${provider.model}")
                     return@withContext result
@@ -343,7 +344,6 @@ object NativePipelineEngine {
                 }
             }
 
-            // 只有当真正失败重试 2 次均发生异常后，才触发 fallback 提示并转移到下一个模型
             if (mIdx + 1 < modelsToTry.size) {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
@@ -366,14 +366,15 @@ object NativePipelineEngine {
     private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
         val list = mutableListOf<ExtractedQuestion>()
         try {
-            val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])", Pattern.DOTALL)
+            val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])(?:.*?\"has_image\"\\s*:\\s*(true|false))?", Pattern.DOTALL)
             val matcher = jsonObjectPattern.matcher(rawStreamText)
             var count = 0
             while (matcher.find()) {
                 val id = matcher.group(1)?.trim() ?: "${count + 1}"
                 val content = matcher.group(2)?.replace("\\n", " ")?.replace("\\\"", "\"")?.trim() ?: ""
+                val hasImg = matcher.group(3)?.toBoolean() ?: false
                 if (content.isNotEmpty()) {
-                    list.add(ExtractedQuestion(id, content, count))
+                    list.add(ExtractedQuestion(id, content, hasImg, count))
                     count++
                 }
             }
@@ -391,7 +392,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 =================
+        // ================= Stage 1: 题目提取 (全流程使用用户实际选择的当前模型) =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ($currentModel) ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -435,13 +436,13 @@ object NativePipelineEngine {
 
         val questions = parseQuestionsJson(rawQuestions)
         if (questions.isEmpty()) {
-            val fallbackSolved = runStage2ReActAgent(context, rawQuestions) {}.first
+            val fallbackSolved = runStage2ReActAgent(context, rawQuestions, true, dataUrl) {}.first
             return@withContext fallbackSolved
         }
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 =================
+        // ================= Stage 2: 多题并发求解 (有图题自动直接注入原图，无图题纯文本快速推导) =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions with $currentModel ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
@@ -457,7 +458,13 @@ object NativePipelineEngine {
         val solvedList = coroutineScope {
             questions.map { q ->
                 async(Dispatchers.IO) {
-                    val (ans, calls) = runStage2ReActAgent(context, q.content) { currentCallsForThisQuestion ->
+                    // 智能判断：如果 Stage 1 研判该题带有图表背景 (hasImage=true)，Stage 2 直接将原图多模态传入！
+                    val (ans, calls) = runStage2ReActAgent(
+                        context = context,
+                        questionContent = q.content,
+                        hasImage = q.hasImage,
+                        imageDataUrl = dataUrl
+                    ) { currentCallsForThisQuestion ->
                         synchronized(statusList) {
                             val item = statusList.find { it.id == q.id }
                             if (item != null) {
@@ -495,7 +502,7 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 =================
+        // ================= Stage 3: AR 排版提炼 (全流程使用用户实际选中的当前模型) =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Single-pass Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
@@ -540,6 +547,8 @@ object NativePipelineEngine {
     private suspend fun runStage2ReActAgent(
         context: Context,
         questionContent: String,
+        hasImage: Boolean = false,
+        imageDataUrl: String? = null,
         onToolCallExecuted: suspend (Int) -> Unit
     ): Pair<String, Int> = withContext(Dispatchers.IO) {
         val messages = JSONArray().apply {
@@ -547,10 +556,28 @@ object NativePipelineEngine {
                 put("role", "system")
                 put("content", STAGE2_PROMPT)
             })
-            put(JSONObject().apply {
+
+            // 智能构建 Stage 2 用户消息：有图题直接多模态传图，无图题纯文本快速推导
+            val userMsg = JSONObject().apply {
                 put("role", "user")
-                put("content", "题目内容:\n$questionContent")
-            })
+                if (hasImage && !imageDataUrl.isNullOrEmpty()) {
+                    put("content", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("type", "text")
+                            put("text", "题目内容:\n$questionContent\n（请结合图片中的图表与几何标注详细推导解答）")
+                        })
+                        put(JSONObject().apply {
+                            put("type", "image_url")
+                            put("image_url", JSONObject().apply {
+                                put("url", imageDataUrl)
+                            })
+                        })
+                    })
+                } else {
+                    put("content", "题目内容:\n$questionContent")
+                }
+            }
+            put(userMsg)
         }
 
         var totalToolCalls = 0
@@ -652,14 +679,15 @@ object NativePipelineEngine {
                 val item = arr.optJSONObject(i) ?: continue
                 val id = item.optString("id", "${i + 1}")
                 val content = item.optString("content", "")
+                val hasImg = item.optBoolean("has_image", false)
                 if (content.isNotEmpty()) {
-                    list.add(ExtractedQuestion(id, content, i))
+                    list.add(ExtractedQuestion(id, content, hasImg, i))
                 }
             }
         } catch (_: Exception) {
             val lines = raw.lines().filter { it.isNotBlank() }
             lines.forEachIndexed { index, line ->
-                list.add(ExtractedQuestion("${index + 1}", line, index))
+                list.add(ExtractedQuestion("${index + 1}", line, false, index))
             }
         }
         return list
