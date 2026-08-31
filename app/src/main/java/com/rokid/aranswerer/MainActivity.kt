@@ -110,7 +110,6 @@ class MainActivity : AppCompatActivity() {
             bottomMargin = (12 * density).toInt()
         })
 
-        // 预先常驻挂载 KaTeXFormulaWebView
         katexWebView = KaTeXFormulaWebView(this).apply {
             setBackgroundColor(Color.BLACK)
         }
@@ -264,7 +263,7 @@ class MainActivity : AppCompatActivity() {
         val displayName = when (chosen) {
             "gemini-3.7-flash" -> "Gemini"
             "deepseek-v4-flash-vision-exp" -> "DeepSeek"
-            "gpt-5.6-luna" -> "Luna"
+            "GLM-5.3-Flash" -> "GLM-5.3-Flash"
             else -> chosen
         }
 

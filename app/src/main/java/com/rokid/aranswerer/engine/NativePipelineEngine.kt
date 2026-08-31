@@ -53,10 +53,11 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
+    // 严选真实可用且支持推理的模型列表 (Gemini, DeepSeek 官方通道, 智谱 GLM-5.3-Flash)
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
         "deepseek-v4-flash-vision-exp",
-        "gpt-5.6-luna"
+        "GLM-5.3-Flash"
     )
 
     var currentModel: String = "gemini-3.7-flash"
@@ -73,7 +74,6 @@ object NativePipelineEngine {
         "请解答本题目。默认提供基础检索与代数计算工具。\n" +
         "若本题需要微积分、复变函数、信号系统、电磁波、几何统计等领域的专用计算工具,请调用相关工具辅助推导并输出最终答案。"
 
-    // 强化紧凑排版提示词：禁止多余空行，每题紧凑排列
     private const val STAGE3_PROMPT =
         "整理为极紧凑 AR 屏幕排版:\n" +
         "1. 务必严格保留输入中各题的原版实际题号(如原题号为 1, 2 就必须输出 1. , 2. ，严禁私自更改题号)。\n" +
@@ -121,13 +121,24 @@ object NativePipelineEngine {
     private fun getProviderConfig(context: Context, modelName: String): ProviderConfig {
         val model = modelName.ifBlank { currentModel }
         val isDeepSeek = model.contains("deepseek", ignoreCase = true)
-        val base = if (isDeepSeek) ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/') else ConfigManager.getPrimaryApiBase(context).trim().trimEnd('/')
-        val key = if (isDeepSeek) ConfigManager.getDeepSeekApiKey(context).trim() else ConfigManager.getPrimaryApiKey(context).trim()
+        val isZhipu = model.contains("glm", ignoreCase = true)
+
+        val base = when {
+            isZhipu -> ConfigManager.getZhipuApiBase(context).trim().trimEnd('/')
+            isDeepSeek -> ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/')
+            else -> ConfigManager.getPrimaryApiBase(context).trim().trimEnd('/')
+        }
+
+        val key = when {
+            isZhipu -> ConfigManager.getZhipuApiKey(context).trim()
+            isDeepSeek -> ConfigManager.getDeepSeekApiKey(context).trim()
+            else -> ConfigManager.getPrimaryApiKey(context).trim()
+        }
 
         val endpoint = when {
             base.endsWith("/chat/completions") -> base
-            base.endsWith("/v1") -> "$base/chat/completions"
-            else -> "$base/v1/chat/completions"
+            base.endsWith("/v4") || base.endsWith("/v1") -> "$base/chat/completions"
+            else -> "$base/chat/completions"
         }
 
         return ProviderConfig(endpoint = endpoint, key = key, model = model)
@@ -169,11 +180,13 @@ object NativePipelineEngine {
                     Log.d(TAG, "Requesting model ${provider.model} (attempt $attempt)...")
                     val result = withTimeout(25000L) {
                         val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
+                        val isZhipu = provider.model.contains("glm", ignoreCase = true)
+
                         val body = JSONObject().apply {
                             put("model", provider.model)
                             put("messages", messages)
                             put("stream", true)
-                            if (tools != null && tools.length() > 0 && !isDeepSeek) {
+                            if (tools != null && tools.length() > 0 && !isDeepSeek && !isZhipu) {
                                 put("tools", tools)
                             }
                         }
@@ -301,7 +314,7 @@ object NativePipelineEngine {
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.7-flash" -> "Gemini"
                     "deepseek-v4-flash-vision-exp" -> "DeepSeek"
-                    "gpt-5.6-luna" -> "Luna"
+                    "GLM-5.3-Flash" -> "GLM-5.3-Flash"
                     else -> nextModel
                 }
                 Log.i(TAG, "Fallback to next model: $nextDisplayName")
@@ -446,7 +459,7 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 (紧凑单行拼接) =================
+        // ================= Stage 3: AR 排版提炼 =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
@@ -481,7 +494,6 @@ object NativePipelineEngine {
             Log.w(TAG, "Stage 3 summary failed, fallback to Stage 2 answers: ${e.message}", e)
         }
 
-        // 兜底直出：紧凑拼接
         val directAnswers = solvedList.sortedBy { it.originalOrder }.joinToString("\n") {
             "**${it.id}.** ${it.answer.trim()}"
         }

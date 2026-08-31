@@ -16,9 +16,12 @@ object ConfigManager {
     private const val KEY_PRIMARY_KEY = "primary_api_key"
     private const val KEY_DEEPSEEK_BASE = "deepseek_api_base"
     private const val KEY_DEEPSEEK_KEY = "deepseek_api_key"
+    private const val KEY_ZHIPU_BASE = "zhipu_api_base"
+    private const val KEY_ZHIPU_KEY = "zhipu_api_key"
 
     const val DEFAULT_PRIMARY_BASE = "https://newapi.telecom.moe/v1"
     const val DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
+    const val DEFAULT_ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -66,5 +69,27 @@ object ConfigManager {
 
     fun setDeepSeekApiKey(context: Context, value: String) {
         getPrefs(context).edit().putString(KEY_DEEPSEEK_KEY, value.trim()).apply()
+    }
+
+    fun getZhipuApiBase(context: Context): String {
+        val custom = getPrefs(context).getString(KEY_ZHIPU_BASE, null)
+        if (!custom.isNullOrEmpty()) return custom
+        if (LocalDevSecrets.ZHIPU_API_BASE.isNotEmpty()) return LocalDevSecrets.ZHIPU_API_BASE
+        return AppSecrets.ZHIPU_API_BASE.ifEmpty { DEFAULT_ZHIPU_BASE }
+    }
+
+    fun setZhipuApiBase(context: Context, value: String) {
+        getPrefs(context).edit().putString(KEY_ZHIPU_BASE, value.trim()).apply()
+    }
+
+    fun getZhipuApiKey(context: Context): String {
+        val custom = getPrefs(context).getString(KEY_ZHIPU_KEY, null)
+        if (!custom.isNullOrEmpty()) return custom
+        if (LocalDevSecrets.ZHIPU_API_KEY.isNotEmpty()) return LocalDevSecrets.ZHIPU_API_KEY
+        return AppSecrets.ZHIPU_API_KEY
+    }
+
+    fun setZhipuApiKey(context: Context, value: String) {
+        getPrefs(context).edit().putString(KEY_ZHIPU_KEY, value.trim()).apply()
     }
 }
