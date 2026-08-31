@@ -155,16 +155,32 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器
+        // 3. 触控手势探测器：严格区分上下滑与前后滑
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy < -60 || vx > 60) {
-                    handleSwipeUp()
-                    return true
-                }
-                if (vy > 60 || vx < -60) {
-                    handleSwipeDown()
-                    return true
+                val deltaY = if (e1 != null) e2.y - e1.y else 0f
+                val deltaX = if (e1 != null) e2.x - e1.x else 0f
+
+                // 优先以垂直分量为准判定真实上下滑
+                if (abs(deltaY) > abs(deltaX)) {
+                    if (deltaY < -20 || vy < -100) {
+                        // 真实向上滑动 -> 上滑操作 (切模型)
+                        handleSwipeUp()
+                        return true
+                    } else if (deltaY > 20 || vy > 100) {
+                        // 真实向下滑动 -> 下滑操作 (进拍摄)
+                        handleSwipeDown()
+                        return true
+                    }
+                } else {
+                    // 水平分量 (触控板前后滑)
+                    if (deltaX > 20 || vx > 100) {
+                        handleSwipeUp()
+                        return true
+                    } else if (deltaX < -20 || vx < -100) {
+                        handleSwipeDown()
+                        return true
+                    }
                 }
                 return false
             }
@@ -207,8 +223,6 @@ class MainActivity : AppCompatActivity() {
 
         AudioHelper.forceMute(this)
         WifiHelper.autoConnect(this)
-
-        // 核心修复：仅在首次检测到未忽略电池优化时才请求一次白名单，若用户已加入白名单绝不打扰用户或弹页面
         checkBatteryOptimizationSilently()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -217,14 +231,10 @@ class MainActivity : AppCompatActivity() {
         try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
     }
 
-    /**
-     * 智能检查电池优化白名单：只有真正未优化时才请求，已优化则静默通过
-     */
     private fun checkBatteryOptimizationSilently() {
         try {
             val pm = getSystemService(PowerManager::class.java)
             if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
-                // 读取 SharedPreferences 确保不重复骚扰用户
                 val prefs = getSharedPreferences("ar_answerer_config", Context.MODE_PRIVATE)
                 val hasPrompted = prefs.getBoolean("has_prompted_battery_opt", false)
                 if (!hasPrompted) {
@@ -255,22 +265,31 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed(hideModelStatusRunnable, 1000)
     }
 
+    /**
+     * 上滑操作：休眠态切模型，答案态向上翻页
+     */
     private fun handleSwipeUp() {
         if (state == 0) {
+            Log.d("ARAnswerer", "handleSwipeUp -> switchModel(1)")
             switchModel(1)
         } else if (state == 3) {
-            Log.d("ARAnswerer", "Executing Answer Scroll Up (-180px)")
+            Log.d("ARAnswerer", "handleSwipeUp -> Answer Scroll Up (-180px)")
             katexWebView?.smoothScroll(-180)
         }
     }
 
+    /**
+     * 下滑操作：休眠态进拍摄，取景态提前抓拍，答案态向下翻页
+     */
     private fun handleSwipeDown() {
         if (state == 0) {
+            Log.d("ARAnswerer", "handleSwipeDown -> enterPreview")
             enterPreview()
         } else if (state == 1) {
+            Log.d("ARAnswerer", "handleSwipeDown -> triggerHardwareCapture")
             triggerHardwareCapture()
         } else if (state == 3) {
-            Log.d("ARAnswerer", "Executing Answer Scroll Down (+180px)")
+            Log.d("ARAnswerer", "handleSwipeDown -> Answer Scroll Down (+180px)")
             katexWebView?.smoothScroll(180)
         }
     }
