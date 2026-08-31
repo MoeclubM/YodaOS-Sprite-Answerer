@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
-        window.attributes = window.attributes.apply { screenBrightness = 0.25f }
+        // 不修改系统全局屏幕亮度，保持用户设备原生亮度设置
 
         root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -96,6 +96,7 @@ class MainActivity : AppCompatActivity() {
         val previewH = (180 * density).toInt()
 
         previewCard = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
+        // 仅对图像取景预览卡片设置 0.35f 适度透明度/亮度
         textureView = TextureView(this).apply { alpha = 0.35f }
         previewCard.addView(textureView, FrameLayout.LayoutParams(-1, -1))
         safeContent.addView(previewCard, FrameLayout.LayoutParams(previewW, previewH).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = (45 * density).toInt() })
@@ -111,7 +112,7 @@ class MainActivity : AppCompatActivity() {
             bottomMargin = (12 * density).toInt()
         })
 
-        // 挂载原生状态展示 TextView 与 KaTeX WebView
+        // 挂载原生状态展示 TextView 与 KaTeX WebView (文本内容保持正常高对比度亮度)
         stageTextView = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 13.5f
@@ -127,9 +128,9 @@ class MainActivity : AppCompatActivity() {
         }
         contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
 
-        // 1. 左上角：暗色电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
+        // 1. 左上角：电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
         batteryStepView = TextView(this).apply {
-            setTextColor(0x7700ff66.toInt())
+            setTextColor(0xff00ff66.toInt())
             textSize = 13f
             setPadding(16, 12, 24, 16)
             isClickable = false

@@ -16,16 +16,6 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-        
-        ndk {
-            abiFilters.addAll(setOf("arm64-v8a", "armeabi-v7a"))
-        }
-    }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
     }
 
     signingConfigs {
@@ -51,10 +41,6 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.appcompat)
-    implementation(libs.camerax.core)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.view)
     implementation(libs.okhttp)
     implementation(libs.coroutines.android)
 }
