@@ -155,29 +155,29 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 3. 触控手势探测器：严格区分上下滑与前后滑
+        // 3. 触控手势探测器：严格单向纯净判定
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 val deltaY = if (e1 != null) e2.y - e1.y else 0f
                 val deltaX = if (e1 != null) e2.x - e1.x else 0f
 
-                // 优先以垂直分量为准判定真实上下滑
+                // 优先以垂直物理位移为准
                 if (abs(deltaY) > abs(deltaX)) {
-                    if (deltaY < -20 || vy < -100) {
-                        // 真实向上滑动 -> 上滑操作 (切模型)
+                    if (deltaY < -20) {
+                        // 向上滑动 -> 切模型
                         handleSwipeUp()
                         return true
-                    } else if (deltaY > 20 || vy > 100) {
-                        // 真实向下滑动 -> 下滑操作 (进拍摄)
+                    } else if (deltaY > 20) {
+                        // 向下滑动 -> 进拍摄
                         handleSwipeDown()
                         return true
                     }
                 } else {
-                    // 水平分量 (触控板前后滑)
-                    if (deltaX > 20 || vx > 100) {
+                    // 水平方向
+                    if (deltaX > 20) {
                         handleSwipeUp()
                         return true
-                    } else if (deltaX < -20 || vx < -100) {
+                    } else if (deltaX < -20) {
                         handleSwipeDown()
                         return true
                     }
