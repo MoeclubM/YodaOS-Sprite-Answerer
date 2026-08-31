@@ -262,7 +262,7 @@ class MainActivity : AppCompatActivity() {
 
         val displayName = when (chosen) {
             "gemini-3.7-flash" -> "Gemini"
-            "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+            "deepseek-v4-flash" -> "DeepSeek"
             "GLM-5.3-Flash" -> "GLM-5.3-Flash"
             else -> chosen
         }

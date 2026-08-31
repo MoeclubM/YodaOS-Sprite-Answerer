@@ -53,10 +53,10 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
-    // 严选真实可用且支持推理的模型列表 (Gemini, DeepSeek 官方通道, 智谱 GLM-5.3-Flash)
+    // 严选经过真实 API 测试通过的黄金模型列表
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-v4-flash",
         "GLM-5.3-Flash"
     )
 
@@ -123,16 +123,21 @@ object NativePipelineEngine {
         val isDeepSeek = model.contains("deepseek", ignoreCase = true)
         val isZhipu = model.contains("glm", ignoreCase = true)
 
+        val customDeepSeekKey = ConfigManager.getDeepSeekApiKey(context).trim()
+        val customZhipuKey = ConfigManager.getZhipuApiKey(context).trim()
+        val primaryKey = ConfigManager.getPrimaryApiKey(context).trim()
+
+        // 智能路由：若配置了官方独立 Key 则走官方端点，否则走主中转端点
         val base = when {
-            isZhipu -> ConfigManager.getZhipuApiBase(context).trim().trimEnd('/')
-            isDeepSeek -> ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/')
+            isZhipu && customZhipuKey.isNotEmpty() -> ConfigManager.getZhipuApiBase(context).trim().trimEnd('/')
+            isDeepSeek && customDeepSeekKey.isNotEmpty() -> ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/')
             else -> ConfigManager.getPrimaryApiBase(context).trim().trimEnd('/')
         }
 
         val key = when {
-            isZhipu -> ConfigManager.getZhipuApiKey(context).trim()
-            isDeepSeek -> ConfigManager.getDeepSeekApiKey(context).trim()
-            else -> ConfigManager.getPrimaryApiKey(context).trim()
+            isZhipu && customZhipuKey.isNotEmpty() -> customZhipuKey
+            isDeepSeek && customDeepSeekKey.isNotEmpty() -> customDeepSeekKey
+            else -> primaryKey
         }
 
         val endpoint = when {
@@ -186,6 +191,7 @@ object NativePipelineEngine {
                             put("model", provider.model)
                             put("messages", messages)
                             put("stream", true)
+                            // 官方规范：纯推理大模型在无 tool 注册时保持纯净调用
                             if (tools != null && tools.length() > 0 && !isDeepSeek && !isZhipu) {
                                 put("tools", tools)
                             }
@@ -249,6 +255,7 @@ object NativePipelineEngine {
                                                 onToken?.invoke(contentAcc.toString())
                                             }
 
+                                            // 官方 DeepSeek (deepseek-reasoner) 与 智谱 (GLM-5.3-Flash) 均使用 delta.reasoning_content 返回思维链
                                             val r = delta?.optString("reasoning_content")
                                             if (r != null && r.isNotEmpty() && r != "null") {
                                                 reasoningAcc.append(r)
@@ -279,6 +286,7 @@ object NativePipelineEngine {
                         val finalContent = contentAcc.toString().trim()
                         val finalReasoning = reasoningAcc.toString().trim()
 
+                        // 智能合并：若仅输出了思考链则以思考链作为内容，否则以正式 content 为准
                         val resultText = if (finalContent.isNotEmpty()) {
                             finalContent
                         } else if (finalReasoning.isNotEmpty()) {
@@ -313,7 +321,7 @@ object NativePipelineEngine {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.7-flash" -> "Gemini"
-                    "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+                    "deepseek-v4-flash" -> "DeepSeek"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
                     else -> nextModel
                 }
