@@ -53,8 +53,10 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
+    // 严选经过真实多模态实测可用的 4 款旗舰多模态模型列表
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
+        "muse-spark-1.2",
         "GLM-5.3-Flash",
         "deepseek-v4-flash-vision-exp"
     )
@@ -69,7 +71,6 @@ object NativePipelineEngine {
         "[{\"id\": \"1\", \"content\": \"题目1完整内容...\"}, {\"id\": \"2\", \"content\": \"题目2完整内容...\"}]\n" +
         "若无题目则输出 NO_QUESTION。"
 
-    // 优化学科专业解题思路提示词
     private const val STAGE2_PROMPT =
         "请作为专业理科学科导师解答本题目。默认提供专业代数/微积分计算、科学知识库检索与联网工具。\n" +
         "【解题规范与专业思路】:\n" +
@@ -85,7 +86,6 @@ object NativePipelineEngine {
         "3. 选择题/填空题:只给答案,同行不换行(如 \"1. A 2. B 3. 2π\"),严禁多余解析。\n" +
         "4. 解答题/大题:只保留核心步骤与最终结论,严禁文字铺垫,数学公式使用标准 LaTeX 格式(支持 $$...$$ 与 $...$)。"
 
-    // 全功能理科解题工具集
     private val TOOLS_SCHEMA = JSONArray().apply {
         put(JSONObject().apply {
             put("type", "function")
@@ -339,6 +339,7 @@ object NativePipelineEngine {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.7-flash" -> "Gemini"
+                    "muse-spark-1.2" -> "MuseSpark"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
                     "deepseek-v4-flash-vision-exp" -> "DeepSeek"
                     else -> nextModel
@@ -381,7 +382,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 (内部流式收集，提取出一道上屏一道截断单行) =================
+        // ================= Stage 1: 题目提取 =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ($currentModel) ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -406,7 +407,6 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
-        // 内部流式接收：不直接向 UI 打印原始 JSON 碎片，而是增量解析出题目后单行截断上屏
         val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
             val partial = parseIncrementalQuestions(streamAcc)
             if (partial.size > lastDispatchedCount) {
@@ -432,7 +432,7 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 (三列紧凑矩阵网格展示) =================
+        // ================= Stage 2: 多题并发求解 =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions with $currentModel ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
@@ -486,7 +486,7 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 总结 (内部流式累积，完成后一次性注入渲染，杜绝重复渲染) =================
+        // ================= Stage 3: AR 排版提炼 =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Single-pass Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
@@ -508,7 +508,6 @@ object NativePipelineEngine {
         }
 
         try {
-            // 内部流式接收：不频繁触发 WebView 重新渲染，等完整结束后一次性回调渲染！
             val finalResult = streamMessages(context, stage3Messages, null, null)
             if (finalResult.content.isNotBlank()) {
                 withContext(Dispatchers.Main) {

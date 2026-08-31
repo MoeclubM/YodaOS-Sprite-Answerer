@@ -24,7 +24,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -275,8 +274,9 @@ class MainActivity : AppCompatActivity() {
 
         val displayName = when (chosen) {
             "gemini-3.7-flash" -> "Gemini"
-            "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+            "muse-spark-1.2" -> "MuseSpark"
             "GLM-5.3-Flash" -> "GLM-5.3-Flash"
+            "deepseek-v4-flash-vision-exp" -> "DeepSeek"
             else -> chosen
         }
 
@@ -398,7 +398,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 格式化单行截断预览文本
     private fun formatSingleLineTruncated(id: String, content: String, maxChars: Int = 19): String {
         val clean = content.replace("\\s+".toRegex(), " ").trim()
         val prefix = "$id. "
@@ -435,7 +434,6 @@ class MainActivity : AppCompatActivity() {
                             status.visibility = View.GONE
                             stageTextView?.visibility = View.VISIBLE
                             katexWebView?.visibility = View.GONE
-                            // Stage 1 流式提取：一题一行单行截断显示
                             stageTextView?.text = qs.joinToString("\n") { formatSingleLineTruncated(it.id, it.content) }
                         }
                     },
@@ -446,7 +444,6 @@ class MainActivity : AppCompatActivity() {
                             status.text = topStatusText
                             stageTextView?.visibility = View.VISIBLE
                             katexWebView?.visibility = View.GONE
-                            // Stage 2 状态：三列整齐紧凑网格展示，例如 [1:T0√] [2:T1...] [3:T0√]
                             stageTextView?.text = ss.sortedBy { it.originalOrder }.chunked(3).joinToString("\n") { row ->
                                 row.joinToString("  ") { "[${it.id}:${if (it.toolCount > 0) "T" + it.toolCount else ""}${if (it.isDone) "√" else "..."}]" }
                             }
@@ -458,7 +455,6 @@ class MainActivity : AppCompatActivity() {
                             status.visibility = View.GONE
                             stageTextView?.visibility = View.GONE
                             katexWebView?.visibility = View.VISIBLE
-                            // Stage 3 结束后一次性单次渲染，杜绝中间重复重绘
                             katexWebView?.setMarkdownText(streamText)
                         }
                     }
@@ -476,6 +472,20 @@ class MainActivity : AppCompatActivity() {
                 status.text = "解题失败: ${e.message}"
             }
         }
+    }
+
+    private fun ensureKatexWebViewLoaded(): KaTeXFormulaWebView {
+        if (katexWebView == null) {
+            contentContainer.removeAllViews()
+            katexWebView = KaTeXFormulaWebView(this).apply {
+                setBackgroundColor(Color.BLACK)
+            }
+            contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
+        } else if (katexWebView?.parent == null) {
+            contentContainer.removeAllViews()
+            contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
+        }
+        return katexWebView!!
     }
 
     private fun goSleep() {
