@@ -83,7 +83,6 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
-        // 不修改系统全局屏幕亮度，保持用户设备原生亮度设置
 
         root = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -96,7 +95,6 @@ class MainActivity : AppCompatActivity() {
         val previewH = (180 * density).toInt()
 
         previewCard = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
-        // 仅对图像取景预览卡片设置 0.35f 适度透明度/亮度
         textureView = TextureView(this).apply { alpha = 0.35f }
         previewCard.addView(textureView, FrameLayout.LayoutParams(-1, -1))
         safeContent.addView(previewCard, FrameLayout.LayoutParams(previewW, previewH).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = (45 * density).toInt() })
@@ -112,7 +110,6 @@ class MainActivity : AppCompatActivity() {
             bottomMargin = (12 * density).toInt()
         })
 
-        // 挂载原生状态展示 TextView 与 KaTeX WebView (文本内容保持正常高对比度亮度)
         stageTextView = TextView(this).apply {
             setTextColor(0xff00ff66.toInt())
             textSize = 13.5f
@@ -128,9 +125,9 @@ class MainActivity : AppCompatActivity() {
         }
         contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
 
-        // 1. 左上角：电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
+        // 1. 左上角：暗色电量 + 当前 Step 显示 (如 "52 1" 或 "60 2")
         batteryStepView = TextView(this).apply {
-            setTextColor(0xff00ff66.toInt())
+            setTextColor(0x7700ff66.toInt())
             textSize = 13f
             setPadding(16, 12, 24, 16)
             isClickable = false
@@ -208,14 +205,39 @@ class MainActivity : AppCompatActivity() {
             }
         ).also { it.start() }
 
-        AudioHelper.forceMute(this); WifiHelper.autoConnect(this)
+        AudioHelper.forceMute(this)
+        WifiHelper.autoConnect(this)
+
+        // 核心修复：仅在首次检测到未忽略电池优化时才请求一次白名单，若用户已加入白名单绝不打扰用户或弹页面
+        checkBatteryOptimizationSilently()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
+        }
+        try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
+    }
+
+    /**
+     * 智能检查电池优化白名单：只有真正未优化时才请求，已优化则静默通过
+     */
+    private fun checkBatteryOptimizationSilently() {
         try {
             val pm = getSystemService(PowerManager::class.java)
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        } catch (_: Exception) {}
-        try { if (!Settings.canDrawOverlays(this)) startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1002)
-        try { startService(Intent(this, KeepAliveService::class.java)) } catch (_: Exception) {}
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                // 读取 SharedPreferences 确保不重复骚扰用户
+                val prefs = getSharedPreferences("ar_answerer_config", Context.MODE_PRIVATE)
+                val hasPrompted = prefs.getBoolean("has_prompted_battery_opt", false)
+                if (!hasPrompted) {
+                    prefs.edit().putBoolean("has_prompted_battery_opt", true).apply()
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("ARAnswerer", "Battery optimization check skipped: ${e.message}")
+        }
     }
 
     private fun updateBatteryStepDisplay(step: Int? = null) {
