@@ -24,6 +24,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var textureView: TextureView
     
     private var katexWebView: KaTeXFormulaWebView? = null
+    private var stageTextView: TextView? = null
     private var cameraHelper: NativeCamera2Helper? = null
 
     private var state = 0 // 0 sleep, 1 preview, 2 solving, 3 answer
@@ -110,8 +112,19 @@ class MainActivity : AppCompatActivity() {
             bottomMargin = (12 * density).toInt()
         })
 
+        // 挂载原生状态展示 TextView 与 KaTeX WebView
+        stageTextView = TextView(this).apply {
+            setTextColor(0xff00ff66.toInt())
+            textSize = 13.5f
+            setLineSpacing(3f, 1.25f)
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+        }
+        contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
+
         katexWebView = KaTeXFormulaWebView(this).apply {
             setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
         }
         contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
 
@@ -385,6 +398,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // 格式化单行截断预览文本
+    private fun formatSingleLineTruncated(id: String, content: String, maxChars: Int = 19): String {
+        val clean = content.replace("\\s+".toRegex(), " ").trim()
+        val prefix = "$id. "
+        val budget = maxChars - prefix.length
+        val body = if (clean.length > budget && budget > 0) clean.substring(0, budget - 1) + "…" else clean
+        return prefix + body
+    }
+
     private fun solve(bytes: ByteArray) {
         state = 2
         updateBatteryStepDisplay(step = 1)
@@ -398,16 +420,9 @@ class MainActivity : AppCompatActivity() {
         status.visibility = View.GONE
         status.text = ""
         contentContainer.visibility = View.VISIBLE
-        contentContainer.removeAllViews()
-
-        val stageTextView = TextView(this).apply {
-            setTextColor(0xff00ff66.toInt())
-            textSize = 13f
-            setLineSpacing(4f, 1.2f)
-            setBackgroundColor(Color.BLACK)
-            text = ""
-        }
-        contentContainer.addView(stageTextView, FrameLayout.LayoutParams(-1, -1))
+        stageTextView?.visibility = View.VISIBLE
+        katexWebView?.visibility = View.GONE
+        stageTextView?.text = ""
 
         lifecycleScope.launch {
             try {
@@ -418,29 +433,42 @@ class MainActivity : AppCompatActivity() {
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 1)
                             status.visibility = View.GONE
-                            stageTextView.text = qs.joinToString("\n\n") { "${it.id}. ${it.content.trim()}" }
+                            stageTextView?.visibility = View.VISIBLE
+                            katexWebView?.visibility = View.GONE
+                            // Stage 1 流式提取：一题一行单行截断显示
+                            stageTextView?.text = qs.joinToString("\n") { formatSingleLineTruncated(it.id, it.content) }
                         }
                     },
-                    onStage2DoubleColumnUpdate = { ss, topStatusText ->
+                    onStage2TripleColumnUpdate = { ss, topStatusText ->
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 2)
                             status.visibility = View.VISIBLE
                             status.text = topStatusText
-                            stageTextView.text = ss.sortedBy { it.originalOrder }.chunked(2).joinToString("\n") { row -> row.joinToString("  ") { "[${it.id}][T:${it.toolCount}]${if (it.isDone) "√" else "..."}" } }
+                            stageTextView?.visibility = View.VISIBLE
+                            katexWebView?.visibility = View.GONE
+                            // Stage 2 状态：三列整齐紧凑网格展示，例如 [1:T0√] [2:T1...] [3:T0√]
+                            stageTextView?.text = ss.sortedBy { it.originalOrder }.chunked(3).joinToString("\n") { row ->
+                                row.joinToString("  ") { "[${it.id}:${if (it.toolCount > 0) "T" + it.toolCount else ""}${if (it.isDone) "√" else "..."}]" }
+                            }
                         }
                     },
                     onStage3StreamToken = { streamText ->
                         withContext(Dispatchers.Main) {
                             updateBatteryStepDisplay(step = 3)
                             status.visibility = View.GONE
-                            ensureKatexWebViewLoaded().setMarkdownText(streamText)
+                            stageTextView?.visibility = View.GONE
+                            katexWebView?.visibility = View.VISIBLE
+                            // Stage 3 结束后一次性单次渲染，杜绝中间重复重绘
+                            katexWebView?.setMarkdownText(streamText)
                         }
                     }
                 )
                 state = 3
                 updateBatteryStepDisplay(step = 3)
                 status.visibility = View.GONE
-                ensureKatexWebViewLoaded().setMarkdownText(result)
+                stageTextView?.visibility = View.GONE
+                katexWebView?.visibility = View.VISIBLE
+                katexWebView?.setMarkdownText(result)
             } catch (e: Exception) {
                 state = 3
                 updateBatteryStepDisplay(step = 3)
@@ -450,20 +478,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun ensureKatexWebViewLoaded(): KaTeXFormulaWebView {
-        if (katexWebView == null) {
-            contentContainer.removeAllViews()
-            katexWebView = KaTeXFormulaWebView(this).apply {
-                setBackgroundColor(Color.BLACK)
-            }
-            contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
-        } else if (katexWebView?.parent == null) {
-            contentContainer.removeAllViews()
-            contentContainer.addView(katexWebView, FrameLayout.LayoutParams(-1, -1))
-        }
-        return katexWebView!!
-    }
-
     private fun goSleep() {
         state = 0
         updateBatteryStepDisplay(step = 0)
@@ -471,6 +485,8 @@ class MainActivity : AppCompatActivity() {
         status.visibility = View.GONE
         contentContainer.visibility = View.GONE
         previewCard.visibility = View.GONE
+        stageTextView?.visibility = View.GONE
+        katexWebView?.visibility = View.GONE
         lifecycleScope.launch(Dispatchers.IO) {
             cameraHelper?.stop()
             cameraHelper = null
