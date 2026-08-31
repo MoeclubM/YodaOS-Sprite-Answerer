@@ -53,11 +53,14 @@ data class StreamChatResult(
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
 
-    // 严选经过真实 API 测试通过的黄金模型列表
+    // 默认 Stage 1 专用视觉模型（具备顶级全模态识图拆题能力）
+    private const val VISION_EXTRACTOR_MODEL = "gemini-3.7-flash"
+
+    // Stage 2/3 可自由切换的模型列表（深度数学推理 + 多轮 ReAct 工具调用）
     val AVAILABLE_MODELS = listOf(
         "gemini-3.7-flash",
-        "deepseek-v4-flash",
-        "GLM-5.3-Flash"
+        "GLM-5.3-Flash",
+        "deepseek-v4-flash"
     )
 
     var currentModel: String = "gemini-3.7-flash"
@@ -127,7 +130,6 @@ object NativePipelineEngine {
         val customZhipuKey = ConfigManager.getZhipuApiKey(context).trim()
         val primaryKey = ConfigManager.getPrimaryApiKey(context).trim()
 
-        // 智能路由：若配置了官方独立 Key 则走官方端点，否则走主中转端点
         val base = when {
             isZhipu && customZhipuKey.isNotEmpty() -> ConfigManager.getZhipuApiBase(context).trim().trimEnd('/')
             isDeepSeek && customDeepSeekKey.isNotEmpty() -> ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/')
@@ -159,14 +161,19 @@ object NativePipelineEngine {
         context: Context,
         messages: JSONArray,
         tools: JSONArray? = null,
+        forcedModelName: String? = null,
         onToken: (suspend (String) -> Unit)? = null
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val modelsToTry = mutableListOf<String>()
-        val startIdx = AVAILABLE_MODELS.indexOf(currentModel).let { if (it >= 0) it else 0 }
-        for (i in 0 until AVAILABLE_MODELS.size) {
-            val m = AVAILABLE_MODELS[(startIdx + i) % AVAILABLE_MODELS.size]
-            if (!modelsToTry.contains(m)) {
-                modelsToTry.add(m)
+        if (forcedModelName != null) {
+            modelsToTry.add(forcedModelName)
+        } else {
+            val startIdx = AVAILABLE_MODELS.indexOf(currentModel).let { if (it >= 0) it else 0 }
+            for (i in 0 until AVAILABLE_MODELS.size) {
+                val m = AVAILABLE_MODELS[(startIdx + i) % AVAILABLE_MODELS.size]
+                if (!modelsToTry.contains(m)) {
+                    modelsToTry.add(m)
+                }
             }
         }
 
@@ -184,15 +191,12 @@ object NativePipelineEngine {
                 try {
                     Log.d(TAG, "Requesting model ${provider.model} (attempt $attempt)...")
                     val result = withTimeout(25000L) {
-                        val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
-                        val isZhipu = provider.model.contains("glm", ignoreCase = true)
-
                         val body = JSONObject().apply {
                             put("model", provider.model)
                             put("messages", messages)
                             put("stream", true)
-                            // 官方规范：纯推理大模型在无 tool 注册时保持纯净调用
-                            if (tools != null && tools.length() > 0 && !isDeepSeek && !isZhipu) {
+                            // 官方规范：纯推理或带 tool 调用
+                            if (tools != null && tools.length() > 0) {
                                 put("tools", tools)
                             }
                         }
@@ -255,7 +259,7 @@ object NativePipelineEngine {
                                                 onToken?.invoke(contentAcc.toString())
                                             }
 
-                                            // 官方 DeepSeek (deepseek-reasoner) 与 智谱 (GLM-5.3-Flash) 均使用 delta.reasoning_content 返回思维链
+                                            // DeepSeek与智谱GLM官方思维链解析
                                             val r = delta?.optString("reasoning_content")
                                             if (r != null && r.isNotEmpty() && r != "null") {
                                                 reasoningAcc.append(r)
@@ -286,7 +290,6 @@ object NativePipelineEngine {
                         val finalContent = contentAcc.toString().trim()
                         val finalReasoning = reasoningAcc.toString().trim()
 
-                        // 智能合并：若仅输出了思考链则以思考链作为内容，否则以正式 content 为准
                         val resultText = if (finalContent.isNotEmpty()) {
                             finalContent
                         } else if (finalReasoning.isNotEmpty()) {
@@ -301,7 +304,9 @@ object NativePipelineEngine {
                         StreamChatResult(resultText, finalReasoning, finalToolCalls)
                     }
 
-                    currentModel = targetModel
+                    if (forcedModelName == null) {
+                        currentModel = targetModel
+                    }
                     Log.d(TAG, "Request success with model ${provider.model}")
                     return@withContext result
                 } catch (e: Exception) {
@@ -317,12 +322,12 @@ object NativePipelineEngine {
                 }
             }
 
-            if (mIdx + 1 < modelsToTry.size) {
+            if (forcedModelName == null && mIdx + 1 < modelsToTry.size) {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.7-flash" -> "Gemini"
-                    "deepseek-v4-flash" -> "DeepSeek"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
+                    "deepseek-v4-flash" -> "DeepSeek"
                     else -> nextModel
                 }
                 Log.i(TAG, "Fallback to next model: $nextDisplayName")
@@ -363,8 +368,8 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 =================
-        Log.d(TAG, "=== Entering Stage 1: Question Extraction ===")
+        // ================= Stage 1: 题目提取 (固定使用顶级视觉多模态模型 Gemini-3.7-Flash) =================
+        Log.d(TAG, "=== Entering Stage 1: Question Extraction (Vision Extractor) ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "system")
@@ -388,7 +393,7 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
-        val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
+        val stage1Result = streamMessages(context, stage1Messages, forcedModelName = VISION_EXTRACTOR_MODEL) { streamAcc ->
             val partial = parseIncrementalQuestions(streamAcc)
             if (partial.size > lastDispatchedCount) {
                 lastDispatchedCount = partial.size
@@ -413,8 +418,8 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 =================
-        Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions ===")
+        // ================= Stage 2: 多题并发求解 (支持选中模型 Gemini / GLM-5.3-Flash / DeepSeek 并行推导与工具闭环) =================
+        Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions with $currentModel ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
         var totalToolCalls = 0
