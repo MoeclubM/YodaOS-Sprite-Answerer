@@ -58,8 +58,8 @@ object NativePipelineEngine {
     val AVAILABLE_MODELS = listOf(
         "gemini-3.8-flash",
         "muse-spark-1.2",
-        "GLM-5.3-Flash",
-        "deepseek-v4-flash-vision-exp"
+        "muse-spark-1.3",
+        "GLM-5.3-Flash"
     )
 
     var currentModel: String = "gemini-3.8-flash"
@@ -349,12 +349,11 @@ object NativePipelineEngine {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.8-flash" -> "Gemini"
-                    "muse-spark-1.2" -> "MuseSpark"
+                    "muse-spark-1.2" -> "MuseSpark-1.2"
+                    "muse-spark-1.3" -> "MuseSpark-1.3"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
-                    "deepseek-v4-flash-vision-exp" -> "DeepSeek"
                     else -> nextModel
                 }
-                Log.i(TAG, "Fallback to next model: $nextDisplayName")
                 currentModel = nextModel
                 withContext(Dispatchers.Main) {
                     onModelFallbackHint?.invoke(nextDisplayName)
