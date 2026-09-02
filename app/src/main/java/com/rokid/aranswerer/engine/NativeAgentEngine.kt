@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
 object NativeAgentEngine {
     private val API_BASE = com.rokid.aranswerer.AppSecrets.PRIMARY_API_BASE
     private val API_KEY = com.rokid.aranswerer.AppSecrets.PRIMARY_API_KEY
-    private const val PRIMARY_MODEL = "gemini-3.7-flash"
+    private const val PRIMARY_MODEL = "gemini-3.8-flash"
     private val FALLBACK_MODELS = listOf("gpt-5.6-luna", "muse-spark-1.2")
 
     private val client = OkHttpClient.Builder()

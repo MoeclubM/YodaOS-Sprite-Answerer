@@ -20,7 +20,7 @@ import java.util.regex.Pattern
 data class ExtractedQuestion(
     val id: String,
     val content: String,
-    val hasImage: Boolean = false, // 是否附带图形/电路图/几何图/函数图像
+    val hasImage: Boolean = false,
     val originalOrder: Int = 0
 )
 
@@ -56,13 +56,13 @@ object NativePipelineEngine {
 
     // 严选 4 款 100% 原生多模态旗舰模型
     val AVAILABLE_MODELS = listOf(
-        "gemini-3.7-flash",
+        "gemini-3.8-flash",
         "muse-spark-1.2",
         "GLM-5.3-Flash",
         "deepseek-v4-flash-vision-exp"
     )
 
-    var currentModel: String = "gemini-3.7-flash"
+    var currentModel: String = "gemini-3.8-flash"
 
     var onModelFallbackHint: ((String) -> Unit)? = null
 
@@ -213,7 +213,8 @@ object NativePipelineEngine {
                 var conn: HttpURLConnection? = null
                 try {
                     Log.d(TAG, "Requesting model ${provider.model} (attempt $attempt)...")
-                    val result = withTimeout(25000L) {
+                    // 将超时时间调整为 60s，以完全容纳多模态慢模型 (如 muse-spark-1.2 复杂带图首字延迟 25~35s)
+                    val result = withTimeout(60000L) {
                         val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
                         val isZhipu = provider.model.contains("glm", ignoreCase = true)
 
@@ -229,8 +230,8 @@ object NativePipelineEngine {
                         val url = URL(provider.endpoint)
                         conn = (url.openConnection() as HttpURLConnection).apply {
                             requestMethod = "POST"
-                            connectTimeout = 15000
-                            readTimeout = 25000
+                            connectTimeout = 20000
+                            readTimeout = 60000
                             doOutput = true
                             doInput = true
                             setChunkedStreamingMode(0)
@@ -347,7 +348,7 @@ object NativePipelineEngine {
             if (mIdx + 1 < modelsToTry.size) {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
-                    "gemini-3.7-flash" -> "Gemini"
+                    "gemini-3.8-flash" -> "Gemini"
                     "muse-spark-1.2" -> "MuseSpark"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
                     "deepseek-v4-flash-vision-exp" -> "DeepSeek"
@@ -392,7 +393,7 @@ object NativePipelineEngine {
         val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
-        // ================= Stage 1: 题目提取 (全流程使用用户实际选择的当前模型) =================
+        // ================= Stage 1: 题目提取 =================
         Log.d(TAG, "=== Entering Stage 1: Question Extraction ($currentModel) ===")
         val stage1Messages = JSONArray().apply {
             put(JSONObject().apply {
@@ -442,7 +443,7 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
-        // ================= Stage 2: 多题并发求解 (有图题自动直接注入原图，无图题纯文本快速推导) =================
+        // ================= Stage 2: 多题并发求解 =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions with $currentModel ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()
         var completedCount = 0
@@ -458,7 +459,6 @@ object NativePipelineEngine {
         val solvedList = coroutineScope {
             questions.map { q ->
                 async(Dispatchers.IO) {
-                    // 智能判断：如果 Stage 1 研判该题带有图表背景 (hasImage=true)，Stage 2 直接将原图多模态传入！
                     val (ans, calls) = runStage2ReActAgent(
                         context = context,
                         questionContent = q.content,
@@ -502,7 +502,7 @@ object NativePipelineEngine {
 
         Log.d(TAG, "=== Stage 2 Finished: All ${solvedList.size} questions solved ===")
 
-        // ================= Stage 3: AR 排版提炼 (全流程使用用户实际选中的当前模型) =================
+        // ================= Stage 3: AR 排版提炼 =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Single-pass Rendering ===")
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
@@ -557,7 +557,6 @@ object NativePipelineEngine {
                 put("content", STAGE2_PROMPT)
             })
 
-            // 智能构建 Stage 2 用户消息：有图题直接多模态传图，无图题纯文本快速推导
             val userMsg = JSONObject().apply {
                 put("role", "user")
                 if (hasImage && !imageDataUrl.isNullOrEmpty()) {

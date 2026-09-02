@@ -315,7 +315,7 @@ class MainActivity : AppCompatActivity() {
         NativePipelineEngine.currentModel = chosen
 
         val displayName = when (chosen) {
-            "gemini-3.7-flash" -> "Gemini"
+            "gemini-3.8-flash" -> "Gemini"
             "muse-spark-1.2" -> "MuseSpark"
             "GLM-5.3-Flash" -> "GLM-5.3-Flash"
             "deepseek-v4-flash-vision-exp" -> "DeepSeek"
