@@ -507,11 +507,11 @@ object NativePipelineEngine {
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
                 appendLine("【题号 ${item.id}】")
-                appendLine("原题: ${item.content.trim()}")
-                appendLine("解答: ${item.answer.trim()}")
+                appendLine("原题内容: ${item.content.trim()}")
+                appendLine("完整推导过程与解答:\n${item.answer.trim()}")
+                appendLine()
             }
         }
-
         val stage3Messages = JSONArray().apply {
             put(JSONObject().apply {
                 put("role", "system")
