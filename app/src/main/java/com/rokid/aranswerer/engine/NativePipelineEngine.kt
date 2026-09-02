@@ -57,7 +57,7 @@ object NativePipelineEngine {
     // 严选 4 款 100% 原生多模态旗舰模型
     val AVAILABLE_MODELS = listOf(
         "gemini-3.8-flash",
-        "muse-spark-1.2",
+        "deepseek-v4-flash-vision-exp",
         "muse-spark-1.3",
         "GLM-5.3-Flash"
     )
@@ -349,8 +349,8 @@ object NativePipelineEngine {
                 val nextModel = modelsToTry[mIdx + 1]
                 val nextDisplayName = when (nextModel) {
                     "gemini-3.8-flash" -> "Gemini"
-                    "muse-spark-1.2" -> "MuseSpark-1.2"
-                    "muse-spark-1.3" -> "MuseSpark-1.3"
+                    "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+                    "muse-spark-1.3" -> "MuseSpark"
                     "GLM-5.3-Flash" -> "GLM-5.3-Flash"
                     else -> nextModel
                 }

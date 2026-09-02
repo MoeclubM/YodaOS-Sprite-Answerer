@@ -316,8 +316,8 @@ class MainActivity : AppCompatActivity() {
 
         val displayName = when (chosen) {
             "gemini-3.8-flash" -> "Gemini"
-            "muse-spark-1.2" -> "MuseSpark-1.2"
-            "muse-spark-1.3" -> "MuseSpark-1.3"
+            "deepseek-v4-flash-vision-exp" -> "DeepSeek"
+            "muse-spark-1.3" -> "MuseSpark"
             "GLM-5.3-Flash" -> "GLM-5.3-Flash"
             else -> chosen
         }
