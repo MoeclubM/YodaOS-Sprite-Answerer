@@ -1,6 +1,8 @@
 package com.rokid.aranswerer.engine
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
 import com.rokid.aranswerer.ConfigManager
@@ -8,11 +10,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.InputStream
+import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.regex.Pattern
@@ -50,6 +55,9 @@ data class StreamChatResult(
     val reasoning: String,
     val toolCalls: List<ToolCallInfo>
 )
+
+/** 400/404 类错误重试同模型无意义,直接进下一个模型。 */
+private class NonRetryableException(message: String) : RuntimeException(message)
 
 object NativePipelineEngine {
     private const val TAG = "NativePipelineEngine"
@@ -149,34 +157,46 @@ object NativePipelineEngine {
         })
     }
 
+    private fun chatEndpoint(rawBase: String): String {
+        val base = rawBase.trim().trimEnd('/')
+        return when {
+            base.endsWith("/chat/completions") -> base
+            base.endsWith("/v4") || base.endsWith("/v1") -> "$base/chat/completions"
+            else -> "$base/chat/completions"
+        }
+    }
+
     private fun getProviderConfig(context: Context, modelName: String): ProviderConfig {
         val model = modelName.ifBlank { currentModel }
-        val isDeepSeek = model.contains("deepseek", ignoreCase = true)
-        val isZhipu = model.contains("glm", ignoreCase = true)
+        val lower = model.lowercase()
 
         val customDeepSeekKey = ConfigManager.getDeepSeekApiKey(context).trim()
         val customZhipuKey = ConfigManager.getZhipuApiKey(context).trim()
         val primaryKey = ConfigManager.getPrimaryApiKey(context).trim()
 
-        val base = when {
-            isZhipu && customZhipuKey.isNotEmpty() -> ConfigManager.getZhipuApiBase(context).trim().trimEnd('/')
-            isDeepSeek && customDeepSeekKey.isNotEmpty() -> ConfigManager.getDeepSeekApiBase(context).trim().trimEnd('/')
-            else -> ConfigManager.getPrimaryApiBase(context).trim().trimEnd('/')
+        // 按实际配置路由:
+        // - GLM-5.3-Flash -> 优先智谱官方,官方 key 为空才回落 Primary 网关。
+        // - deepseek-v4-flash-vision-exp -> 优先 DeepSeek 官方(vision 已发布),无 key 才回落网关。
+        // - muse-spark-1.3 / gemini-3.8-flash -> 只走 Primary 网关(newapi),官方直连不认识这些名字。
+        val isGlm = lower.contains("glm")
+        val isDeepSeek = lower.contains("deepseek")
+        if (isGlm && customZhipuKey.isNotEmpty()) {
+            return ProviderConfig(
+                endpoint = chatEndpoint(ConfigManager.getZhipuApiBase(context)),
+                key = customZhipuKey,
+                model = model
+            )
+        }
+        if (isDeepSeek && customDeepSeekKey.isNotEmpty()) {
+            return ProviderConfig(
+                endpoint = chatEndpoint(ConfigManager.getDeepSeekApiBase(context)),
+                key = customDeepSeekKey,
+                model = model
+            )
         }
 
-        val key = when {
-            isZhipu && customZhipuKey.isNotEmpty() -> customZhipuKey
-            isDeepSeek && customDeepSeekKey.isNotEmpty() -> customDeepSeekKey
-            else -> primaryKey
-        }
-
-        val endpoint = when {
-            base.endsWith("/chat/completions") -> base
-            base.endsWith("/v4") || base.endsWith("/v1") -> "$base/chat/completions"
-            else -> "$base/chat/completions"
-        }
-
-        return ProviderConfig(endpoint = endpoint, key = key, model = model)
+        val primaryBase = ConfigManager.getPrimaryApiBase(context)
+        return ProviderConfig(endpoint = chatEndpoint(primaryBase), key = primaryKey, model = model)
     }
 
     private data class ProviderConfig(
@@ -185,10 +205,43 @@ object NativePipelineEngine {
         val model: String
     )
 
+    private class ToolCallAcc(var id: String, var name: String, val args: StringBuilder)
+
+    /** Stage1 前把原图压到最长边 1280 / JPEG q75:base64 体积缩小约 3~5 倍,上传更快且网关不再 client_gone。 */
+    private fun compressForModel(jpegBytes: ByteArray, maxSide: Int = 1280): ByteArray {
+        return try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return jpegBytes
+            var sample = 1
+            val longest = maxOf(opts.outWidth, opts.outHeight)
+            while (longest / sample > maxSide) sample *= 2
+            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOpts) ?: return jpegBytes
+            val scale = minOf(1f, maxSide.toFloat() / maxOf(bmp.width, bmp.height))
+            val finalBmp = if (scale < 1f) {
+                Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
+            } else bmp
+            val out = ByteArrayOutputStream()
+            finalBmp.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            if (finalBmp !== bmp) bmp.recycle()
+            finalBmp.recycle()
+            val compressed = out.toByteArray()
+            Log.d(TAG, "Image compressed: ${jpegBytes.size} -> ${compressed.size} bytes")
+            if (compressed.isEmpty()) jpegBytes else compressed
+        } catch (e: Exception) {
+            Log.w(TAG, "Image compress failed, use original: ${e.message}")
+            jpegBytes
+        }
+    }
+
     private suspend fun streamMessages(
         context: Context,
         messages: JSONArray,
         tools: JSONArray? = null,
+        timeoutMs: Long = 60000L,
+        maxAttempts: Int = 2,
+        maxTokens: Int? = null,
         onToken: (suspend (String) -> Unit)? = null
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val modelsToTry = mutableListOf<String>()
@@ -209,122 +262,173 @@ object NativePipelineEngine {
                 continue
             }
 
-            for (attempt in 1..2) {
+            for (attempt in 1..maxAttempts) {
                 var conn: HttpURLConnection? = null
                 try {
                     Log.d(TAG, "Requesting model ${provider.model} (attempt $attempt)...")
-                    // 将超时时间调整为 60s，以完全容纳多模态慢模型 (如 muse-spark-1.2 复杂带图首字延迟 25~35s)
-                    val result = withTimeout(60000L) {
-                        val isDeepSeek = provider.model.contains("deepseek", ignoreCase = true)
-                        val isZhipu = provider.model.contains("glm", ignoreCase = true)
-
+                    // 整体超时由 timeoutMs 控制(Stage1 45s,Stage2/3 60s);
+                    // readTimeout 60s 只兜底 OS 层阻塞,避免慢模型首字延迟被误杀。
+                    val result = withTimeout(timeoutMs) {
                         val body = JSONObject().apply {
                             put("model", provider.model)
                             put("messages", messages)
                             put("stream", true)
-                            if (tools != null && tools.length() > 0 && !isDeepSeek && !isZhipu) {
+                            // 官方 DeepSeek 支持 tool_calls(见 api-docs DeepSeek-V3.2+);智谱官方与网关亦兼容,
+                            // 因此 tools 一律透传,不再按厂商剔除。
+                            if (tools != null && tools.length() > 0) {
                                 put("tools", tools)
+                            }
+                            if (maxTokens != null && maxTokens > 0) {
+                                put("max_tokens", maxTokens)
                             }
                         }
 
+                        val payload = body.toString().toByteArray(Charsets.UTF_8)
                         val url = URL(provider.endpoint)
                         conn = (url.openConnection() as HttpURLConnection).apply {
                             requestMethod = "POST"
-                            connectTimeout = 20000
+                            connectTimeout = 15000
+                            // readTimeout 兜底 OS 层阻塞;整体超时由外层 withTimeout 控制,到点直接 fallback。
                             readTimeout = 60000
                             doOutput = true
                             doInput = true
-                            setChunkedStreamingMode(0)
+                            // 发固定长度避免 chunked 上传:网关对 chunked 大 body 易提前 client_gone。
+                            setFixedLengthStreamingMode(payload.size)
                             setRequestProperty("Content-Type", "application/json; charset=utf-8")
                             setRequestProperty("Accept", "text/event-stream")
                             setRequestProperty("Cache-Control", "no-cache")
+                            setRequestProperty("Connection", "close")
                             setRequestProperty("Authorization", "Bearer ${provider.key}")
                         }
 
                         conn!!.outputStream.use { os ->
-                            os.write(body.toString().toByteArray(Charsets.UTF_8))
+                            os.write(payload)
                             os.flush()
                         }
 
                         val code = conn!!.responseCode
                         if (code !in 200..299) {
-                            val errBody = conn!!.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                            val errBody = try {
+                                conn!!.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                            } catch (_: Exception) { "" }
+                            // 400/404(模型名不对/图片格式被拒)重试同模型无意义,直接进下一个模型。
+                            if (code == 400 || code == 404) {
+                                Log.w(TAG, "Model ${provider.model} HTTP $code, skip retry: $errBody")
+                                throw NonRetryableException("HTTP $code: $errBody")
+                            }
                             throw RuntimeException("HTTP $code: $errBody")
                         }
 
-                        val inputStream: InputStream = conn!!.inputStream
-                        val buffer = ByteArray(1024)
-                        val sseBuffer = StringBuilder()
+                        // 用 BufferedReader 按行读 SSE:旧写法逐字节 read() 攒 buffer,弱网下
+                        // 长时间无回调,体感就是 Stage1 卡死;按行读 + 空流即判错,停滞直接走 fallback。
+                        // 注意:网关偶发把多条 SSE 打在一个 TCP 包里,readLine 逐行返回不受影响;
+                        // 若网关把整流攒成一个超大行,readLine 会等整行齐才返回,属网关行为,外层 timeoutMs 兜底。
+                        val reader = BufferedReader(InputStreamReader(conn!!.inputStream, Charsets.UTF_8), 8192)
                         val contentAcc = StringBuilder()
                         val reasoningAcc = StringBuilder()
-                        val toolCallMap = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
+                        val toolCallMap = mutableMapOf<Int, ToolCallAcc>()
+                        var lastTokenAt = 0L
 
-                        var bytesRead: Int
-                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                            val chunkText = String(buffer, 0, bytesRead, Charsets.UTF_8)
-                            sseBuffer.append(chunkText)
-
-                            while (true) {
-                                val newlineIndex = sseBuffer.indexOf('\n')
-                                if (newlineIndex == -1) break
-
-                                val line = sseBuffer.substring(0, newlineIndex).trim()
-                                sseBuffer.delete(0, newlineIndex + 1)
-
-                                if (line.startsWith("data:") && !line.contains("[DONE]")) {
-                                    try {
-                                        val dataStr = line.substring(5).trim()
-                                        if (dataStr.isNotEmpty()) {
-                                            val chunk = JSONObject(dataStr)
-                                            val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
-                                            val delta = choice?.optJSONObject("delta")
-
-                                            val c = delta?.optString("content")
-                                            if (c != null && c.isNotEmpty() && c != "null") {
-                                                contentAcc.append(c)
-                                                onToken?.invoke(contentAcc.toString())
-                                            }
-
-                                            val r = delta?.optString("reasoning_content")
-                                            if (r != null && r.isNotEmpty() && r != "null") {
-                                                reasoningAcc.append(r)
-                                            }
-
-                                            val toolCallsArr = delta?.optJSONArray("tool_calls")
-                                            if (toolCallsArr != null) {
-                                                for (i in 0 until toolCallsArr.length()) {
-                                                    val tcObj = toolCallsArr.optJSONObject(i) ?: continue
-                                                    val idx = tcObj.optInt("index", i)
-                                                    val id = tcObj.optString("id", "")
-                                                    val fnObj = tcObj.optJSONObject("function")
-                                                    val fnName = fnObj?.optString("name", "") ?: ""
-                                                    val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
-
-                                                    val existing = toolCallMap.getOrPut(idx) {
-                                                        Triple(id, fnName, StringBuilder())
-                                                    }
-                                                    existing.third.append(fnArgsDelta)
-                                                }
-                                            }
-                                        }
-                                    } catch (_: Exception) {}
+                        while (true) {
+                            // readLine 阻塞等待网关首字;配合 readTimeout 兜底。
+                            // BufferedReader 内部已有缓冲,弱网下不会像裸 read() 那样长时间空转。
+                            val line: String? = try {
+                                reader.readLine()
+                            } catch (e: java.net.SocketTimeoutException) {
+                                throw RuntimeException("流停滞超过60s无字节(client_gone/网关超时),中断重试")
+                            }
+                            if (line == null) break
+                            val trimmed = line.trim()
+                            if (trimmed.isEmpty() || trimmed.startsWith(":")) continue
+                            if (!trimmed.startsWith("data:")) continue
+                            val dataStr = trimmed.substring(5).trim()
+                            if (dataStr.isEmpty() || dataStr.contains("[DONE]")) {
+                                if (dataStr.contains("[DONE]")) break
+                                continue
+                            }
+                            try {
+                                val chunk = JSONObject(dataStr)
+                                // 先看 usage 包:网关按量计费,超限/欠费时只发 usage 不发 choices,旧逻辑会误判空流。
+                                // 这里只记录不中断,真正的空流判定仍在流末统一做。
+                                val choice = chunk.optJSONArray("choices")?.optJSONObject(0)
+                                // 兼容 stream/non-stream 与 message/delta 两种形态;兼容智谱的 message 形态。
+                                val delta = choice?.optJSONObject("delta")
+                                    ?: choice?.optJSONObject("message")
+                                // 兼容部分网关把 tool_calls 放在 message 层而非 delta 层。
+                                val topToolCalls = choice?.optJSONObject("message")?.optJSONArray("tool_calls")
+                                if (delta == null) {
+                                    // 错误包形态:{"error": {...}} 直接抛出去走 fallback,不在 Stage1 干等。
+                                    val errObj = chunk.optJSONObject("error")
+                                    if (errObj != null) throw RuntimeException("网关错误: $errObj")
+                                    continue
                                 }
+
+                                val c = delta.optString("content", "")
+                                if (c.isNotEmpty() && c != "null") {
+                                    contentAcc.append(c)
+                                    // 节流回调 UI:每 300ms 推一次,避免每 token 切一次主线程阻塞流读取。
+                                    val now = System.currentTimeMillis()
+                                    if (onToken != null && now - lastTokenAt > 300) {
+                                        lastTokenAt = now
+                                        onToken(contentAcc.toString())
+                                    }
+                                }
+
+                                val r = delta.optString("reasoning_content", "")
+                                if (r.isNotEmpty() && r != "null") {
+                                    reasoningAcc.append(r)
+                                }
+                                // 兼容智谱 / GLM 系把推理放在 reasoning_content 或 message.reasoning_content 的情况已在上式覆盖。
+
+                                val toolCallsArr = delta.optJSONArray("tool_calls") ?: topToolCalls
+                                if (toolCallsArr != null) {
+                                    for (i in 0 until toolCallsArr.length()) {
+                                        val tcObj = toolCallsArr.optJSONObject(i) ?: continue
+                                        val idx = tcObj.optInt("index", i)
+                                        val id = tcObj.optString("id", "")
+                                        val fnObj = tcObj.optJSONObject("function")
+                                        // 后续分片 id/name 常为空,必须保留首次非空值,旧 Triple 写法会丢失。
+                                        val fnName = fnObj?.optString("name", "") ?: ""
+                                        val fnArgsDelta = fnObj?.optString("arguments", "") ?: ""
+
+                                        val existing = toolCallMap.getOrPut(idx) {
+                                            ToolCallAcc(id, fnName, StringBuilder())
+                                        }
+                                        if (existing.id.isEmpty() && id.isNotEmpty()) existing.id = id
+                                        if (existing.name.isEmpty() && fnName.isNotEmpty()) existing.name = fnName
+                                        existing.args.append(fnArgsDelta)
+                                    }
+                                }
+                            } catch (e: RuntimeException) {
+                                // 网关 error 包直接向上传走 fallback,不吞掉。
+                                throw e
+                            } catch (_: Exception) {
+                                // 单个 SSE 脏行跳过,不中断整流。
                             }
                         }
+
+                        try { reader.close() } catch (_: Exception) {}
 
                         val finalContent = contentAcc.toString().trim()
                         val finalReasoning = reasoningAcc.toString().trim()
 
+                        // 流正常结束但一字未吐:视为网关 client_gone/空包,直接抛错走下一个模型,
+                        // 而不是把空串当成功返回让 Stage1 在下游空转。
+                        if (finalContent.isEmpty() && finalReasoning.isEmpty() && toolCallMap.isEmpty()) {
+                            throw RuntimeException("网关返回空流(疑似client_gone),切换模型重试")
+                        }
+                        if (onToken != null && finalContent.isNotEmpty()) {
+                            onToken(finalContent)
+                        }
+
                         val resultText = if (finalContent.isNotEmpty()) {
                             finalContent
-                        } else if (finalReasoning.isNotEmpty()) {
-                            finalReasoning
                         } else {
-                            ""
+                            finalReasoning
                         }
 
                         val finalToolCalls = toolCallMap.values.map {
-                            ToolCallInfo(it.first, it.second, it.third.toString())
+                            ToolCallInfo(it.id, it.name, it.args.toString())
                         }
                         StreamChatResult(resultText, finalReasoning, finalToolCalls)
                     }
@@ -335,8 +439,14 @@ object NativePipelineEngine {
                 } catch (e: Exception) {
                     Log.w(TAG, "Model ${provider.model} attempt $attempt error: ${e.message}")
                     lastErr = e
-                    if (attempt == 1) {
-                        try { Thread.sleep(500) } catch (_: Exception) {}
+                    // NonRetryable(400/404)直接跳下一个模型,不浪费第二次 attempt。
+                    if (e is NonRetryableException) break
+                    if (e is kotlinx.coroutines.TimeoutCancellationException) {
+                        Log.w(TAG, "Model ${provider.model} overall timeout ${timeoutMs}ms, fallback")
+                        break
+                    }
+                    if (attempt < maxAttempts) {
+                        delay(500)
                     }
                 } finally {
                     try {
@@ -366,7 +476,9 @@ object NativePipelineEngine {
     private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
         val list = mutableListOf<ExtractedQuestion>()
         try {
-            val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"(.*?)(?=\"\\s*[,\\}])(?:.*?\"has_image\"\\s*:\\s*(true|false))?", Pattern.DOTALL)
+            // 增量解析只认已闭合的 {...}:旧正则的非贪婪 content 会在流式半截 JSON 上跨项吞题,
+            // 导致 Stage1 进度条乱跳。半截的等下个 onToken 再认。
+            val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"((?:\\\\\"|[^\"])*?)\"[^}]*?\"has_image\"\\s*:\\s*(true|false)[^}]*?\\}", Pattern.DOTALL)
             val matcher = jsonObjectPattern.matcher(rawStreamText)
             var count = 0
             while (matcher.find()) {
@@ -389,7 +501,9 @@ object NativePipelineEngine {
         onStage2TripleColumnUpdate: suspend (List<QuestionStatus>, String) -> Unit,
         onStage3StreamToken: suspend (String) -> Unit
     ): String = withContext(Dispatchers.IO) {
-        val base64Image = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
+        // 原图 1920x1080 直接 base64 上传约 1~2MB,是 Stage1 首字慢 + 网关 client_gone 的主因之一。
+        val compressed = compressForModel(jpegBytes)
+        val base64Image = Base64.encodeToString(compressed, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
         // ================= Stage 1: 题目提取 =================
@@ -417,15 +531,22 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
-        val stage1Result = streamMessages(context, stage1Messages) { streamAcc ->
-            val partial = parseIncrementalQuestions(streamAcc)
-            if (partial.size > lastDispatchedCount) {
-                lastDispatchedCount = partial.size
-                withContext(Dispatchers.Main) {
-                    onStage1QuestionsUpdate(partial)
+        // Stage1 只做提取:限 45s + max_tokens 4096,到点没回直接 fallback 下一个模型,
+        // 不再一个慢模型上干等 60s×2 次 + 串行 4 个模型。
+        // 4096 给推理链留足空间:1024 会把 thinking 截断导致空流误判 fallback。
+        val stage1Result = streamMessages(
+            context, stage1Messages,
+            timeoutMs = 45000L, maxAttempts = 1, maxTokens = 4096,
+            onToken = { streamAcc ->
+                val partial = parseIncrementalQuestions(streamAcc)
+                if (partial.size > lastDispatchedCount) {
+                    lastDispatchedCount = partial.size
+                    withContext(Dispatchers.Main) {
+                        onStage1QuestionsUpdate(partial)
+                    }
                 }
             }
-        }
+        )
 
         val rawQuestions = stage1Result.content.ifEmpty { stage1Result.reasoning }
         Log.d(TAG, "Stage 1 raw result: $rawQuestions")
@@ -523,7 +644,7 @@ object NativePipelineEngine {
         }
 
         try {
-            val finalResult = streamMessages(context, stage3Messages, null, null)
+            val finalResult = streamMessages(context, stage3Messages, timeoutMs = 45000L, maxAttempts = 1)
             if (finalResult.content.isNotBlank()) {
                 withContext(Dispatchers.Main) {
                     onStage3StreamToken(finalResult.content)
@@ -581,15 +702,24 @@ object NativePipelineEngine {
         var totalToolCalls = 0
         var turn = 0
         val maxTurns = 3
+        var lastAssistantText = ""
 
         while (turn < maxTurns) {
             turn++
-            val chatResult = streamMessages(context, messages, TOOLS_SCHEMA)
+            // Stage2 单轮同样单次尝试:4 个模型的 fallback 链本身就是 4 次机会,
+            // 再每模型重试只会把单题最坏耗时撑到 8 分钟。
+            val chatResult = streamMessages(context, messages, TOOLS_SCHEMA, timeoutMs = 60000L, maxAttempts = 1)
+            if (chatResult.content.isNotEmpty()) {
+                lastAssistantText = chatResult.content
+            }
 
             if (chatResult.toolCalls.isNotEmpty()) {
                 val assistantMsg = JSONObject().apply {
                     put("role", "assistant")
-                    put("content", chatResult.content.ifEmpty { null })
+                    // content 为空时直接省略该 key:显式 put null 会被部分网关拒收 400。
+                    if (chatResult.content.isNotEmpty()) {
+                        put("content", chatResult.content)
+                    }
                     if (chatResult.reasoning.isNotEmpty()) {
                         put("reasoning_content", chatResult.reasoning)
                     }
@@ -612,10 +742,15 @@ object NativePipelineEngine {
                     totalToolCalls++
                     onToolCallExecuted(totalToolCalls)
 
+                    // 工具名/id 为空的分片直接丢弃:回填给网关会 400,还会污染下一轮。
+                    if (tc.name.isBlank()) {
+                        Log.w(TAG, "Drop tool_call with blank name (id=${tc.id})")
+                        continue
+                    }
                     val toolResult = executeLocalTool(tc.name, tc.arguments)
                     messages.put(JSONObject().apply {
                         put("role", "tool")
-                        put("tool_call_id", tc.id)
+                        put("tool_call_id", tc.id.ifEmpty { "call_${turn}_${totalToolCalls}" })
                         put("content", toolResult)
                     })
                 }
@@ -625,10 +760,22 @@ object NativePipelineEngine {
             if (chatResult.content.isNotEmpty()) {
                 return@withContext Pair(chatResult.content, totalToolCalls)
             }
+            // 既无 tool_calls 也无正文(如纯 reasoning 就截断):记下已有的 reasoning 继续下一轮,
+            // 而不是空转 3 轮后跌入下面的兜底。
+            if (chatResult.reasoning.isNotEmpty()) {
+                lastAssistantText = chatResult.reasoning
+                messages.put(JSONObject().apply {
+                    put("role", "assistant")
+                    put("content", "继续给出最终解答。")
+                })
+                continue
+            }
         }
 
-        val lastContent = messages.optJSONObject(messages.length() - 1)?.optString("content") ?: "解答完成"
-        return@withContext Pair(lastContent, totalToolCalls)
+        // 3 轮无终答:返回最后一次助手正文(可能含部分 tool 结果),而不是把“继续给出最终解答”
+        // 这种过程提示词当成答案喂给 Stage3。
+        val fallback = lastAssistantText.ifBlank { "解答完成" }
+        return@withContext Pair(fallback, totalToolCalls)
     }
 
     private fun executeLocalTool(name: String, argsJson: String): String {
@@ -637,15 +784,16 @@ object NativePipelineEngine {
             when (name) {
                 "math_eval" -> {
                     val expr = obj.optString("expr", "")
-                    "计算结果: $expr = 0 (已校验)"
+                    if (expr.isBlank()) "未提供表达式，无法计算"
+                    else ToolRegistry.executeCalculate(expr)
                 }
                 "search_knowledge" -> {
                     val q = obj.optString("query", "")
-                    "知识库匹配: $q 相关标准定理公式与解题模型验证一致。"
+                    if (q.isBlank()) "未提供检索关键词，无法检索知识库"
+                    else KnowledgeBase.formatKnowledgeResult(q)
                 }
                 "web_search" -> {
-                    val q = obj.optString("query", "")
-                    "搜索结果: $q 参考资料检索成功。"
+                    "本地暂不支持联网搜索，请基于已有知识与题目条件继续推导"
                 }
                 else -> "工具执行成功"
             }
@@ -667,6 +815,9 @@ object NativePipelineEngine {
         val list = mutableListOf<ExtractedQuestion>()
         try {
             var s = raw.trim()
+            // 先清掉 <think> / ```json 围栏等推理残留,再取最外层 [...]。
+            s = s.replace(Regex("(?s)<think>.*?</think>"), "")
+                .replace("```json", "").replace("```", "").trim()
             val startIdx = s.indexOf('[')
             val endIdx = s.lastIndexOf(']')
             if (startIdx != -1 && endIdx != -1 && endIdx > startIdx) {
@@ -677,15 +828,37 @@ object NativePipelineEngine {
                 val item = arr.optJSONObject(i) ?: continue
                 val id = item.optString("id", "${i + 1}")
                 val content = item.optString("content", "")
-                val hasImg = item.optBoolean("has_image", false)
+                // has_image 兼容 "true"/1/yes 等字符串形态,避免全部误判 false 导致 Stage2 丢图。
+                val hasImg = when (val v = item.opt("has_image")) {
+                    is Boolean -> v
+                    is Number -> v.toInt() != 0
+                    is String -> v.equals("true", ignoreCase = true) || v == "1" || v.equals("yes", ignoreCase = true)
+                    else -> false
+                }
                 if (content.isNotEmpty()) {
                     list.add(ExtractedQuestion(id, content, hasImg, i))
                 }
             }
         } catch (_: Exception) {
-            val lines = raw.lines().filter { it.isNotBlank() }
-            lines.forEachIndexed { index, line ->
-                list.add(ExtractedQuestion("${index + 1}", line, false, index))
+            // JSON 整体解析失败(如 max_tokens 截断):先尝试按已闭合的 {...} 逐项抢救,
+            // 抢救无果才按行兜底,且兜底出来的题一律 has_image=true 走带图解答,不丢信息。
+            try {
+                val itemPattern = Pattern.compile("\\{[^{}]*\"content\"\\s*:\\s*\"((?:\\\\\"|[^\"])+)\"[^{}]*\\}", Pattern.DOTALL)
+                val m = itemPattern.matcher(raw)
+                var idx = 0
+                while (m.find()) {
+                    val content = m.group(1)?.replace("\\n", " ")?.replace("\\\"", "\"")?.trim() ?: ""
+                    if (content.length > 5) {
+                        list.add(ExtractedQuestion("${idx + 1}", content, true, idx))
+                        idx++
+                    }
+                }
+            } catch (_: Exception) {}
+            if (list.isEmpty()) {
+                val lines = raw.lines().filter { it.isNotBlank() }
+                lines.forEachIndexed { index, line ->
+                    list.add(ExtractedQuestion("${index + 1}", line, true, index))
+                }
             }
         }
         return list

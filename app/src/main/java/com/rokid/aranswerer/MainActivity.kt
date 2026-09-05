@@ -411,7 +411,9 @@ class MainActivity : AppCompatActivity() {
             textureView = textureView,
             onFrameCaptured = { bytes ->
                 runOnUiThread {
-                    if (bytes.isNotEmpty()) solve(bytes) else goSleep()
+                    if (state != 1) {
+                        Log.d("ARAnswerer", "Drop late/duplicate frame: state=$state")
+                    } else if (bytes.isNotEmpty()) solve(bytes) else goSleep()
                 }
             },
             onError = { err ->

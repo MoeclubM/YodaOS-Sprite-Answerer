@@ -82,8 +82,16 @@ class SettingsDialog(context: Context) : Dialog(context) {
         val deepseekKeyInput = makeInput(ConfigManager.getDeepSeekApiKey(context))
         form.addView(deepseekKeyInput)
 
+        form.addView(makeLabel("智谱 API Base URL:"))
+        val zhipuBaseInput = makeInput(ConfigManager.getZhipuApiBase(context))
+        form.addView(zhipuBaseInput)
+
+        form.addView(makeLabel("智谱 API Key:"))
+        val zhipuKeyInput = makeInput(ConfigManager.getZhipuApiKey(context))
+        form.addView(zhipuKeyInput)
+
         scroll.addView(form)
-        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (280 * density).toInt()))
+        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (320 * density).toInt()))
 
         val btnRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -100,6 +108,8 @@ class SettingsDialog(context: Context) : Dialog(context) {
                 ConfigManager.setPrimaryApiKey(context, primaryKeyInput.text.toString())
                 ConfigManager.setDeepSeekApiBase(context, deepseekBaseInput.text.toString())
                 ConfigManager.setDeepSeekApiKey(context, deepseekKeyInput.text.toString())
+                ConfigManager.setZhipuApiBase(context, zhipuBaseInput.text.toString())
+                ConfigManager.setZhipuApiKey(context, zhipuKeyInput.text.toString())
                 Toast.makeText(context, "配置已保存", Toast.LENGTH_SHORT).show()
                 dismiss()
             }
@@ -116,6 +126,6 @@ class SettingsDialog(context: Context) : Dialog(context) {
         root.addView(btnRow)
 
         setContentView(root)
-        window?.setLayout((380 * density).toInt(), (400 * density).toInt())
+        window?.setLayout((380 * density).toInt(), (440 * density).toInt())
     }
 }
