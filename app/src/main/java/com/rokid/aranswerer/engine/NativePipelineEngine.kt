@@ -490,7 +490,8 @@ object NativePipelineEngine {
         jpegBytes: ByteArray,
         onStage1QuestionsUpdate: suspend (List<ExtractedQuestion>) -> Unit,
         onStage2TripleColumnUpdate: suspend (List<QuestionStatus>, String) -> Unit,
-        onStage3StreamToken: suspend (String) -> Unit
+        onStage3StreamToken: suspend (String) -> Unit,
+        onStage3Enter: (suspend () -> Unit)? = null
     ): String = withContext(Dispatchers.IO) {
         // 相机已取竖构图 1080x1920,不做 EXIF 旋转,直接按 500KB 目标压缩。
         val compressed = compressForModel(jpegBytes)
@@ -615,6 +616,12 @@ object NativePipelineEngine {
 
         // ================= Stage 3: AR 排版提炼 =================
         Log.d(TAG, "=== Entering Stage 3: Summary and KaTeX Single-pass Rendering ===")
+        // 先通知 UI 切走 Stage2 状态(清三列√与计数),再等排版首字,中间不再挂旧状态。
+        if (onStage3Enter != null) {
+            withContext(Dispatchers.Main) {
+                onStage3Enter()
+            }
+        }
         val summaryInput = buildString {
             for (item in solvedList.sortedBy { it.originalOrder }) {
                 appendLine("【题号 ${item.id}】")

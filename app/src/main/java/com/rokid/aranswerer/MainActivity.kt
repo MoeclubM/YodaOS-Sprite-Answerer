@@ -508,6 +508,14 @@ class MainActivity : AppCompatActivity() {
                             katexWebView?.visibility = View.VISIBLE
                             katexWebView?.setMarkdownText(streamText)
                         }
+                    },
+                    onStage3Enter = {
+                        // Stage2 一结束立刻清掉三列解答状态,排版首字前不再挂旧屏。
+                        updateBatteryStepDisplay(step = 3)
+                        status.visibility = View.GONE
+                        stageTextView?.visibility = View.GONE
+                        stageTextView?.text = ""
+                        katexWebView?.visibility = View.VISIBLE
                     }
                 )
                 state = 3
