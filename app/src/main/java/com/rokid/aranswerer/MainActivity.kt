@@ -454,7 +454,14 @@ class MainActivity : AppCompatActivity() {
         state = 2
         updateBatteryStepDisplay(step = 1)
         previewCard.visibility = View.GONE
-        
+
+        // 每次拍照静默存一份原图到固定备份目录,不碰 UI 不提示。
+        try {
+            val dir = java.io.File(getExternalFilesDir(null), "capture_backup").apply { mkdirs() }
+            val name = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+            java.io.File(dir, "cap_$name.jpg").writeBytes(bytes)
+        } catch (_: Exception) {
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             cameraHelper?.stop()
             cameraHelper = null
