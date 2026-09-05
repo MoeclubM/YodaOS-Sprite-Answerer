@@ -102,7 +102,7 @@ class MainActivity : AppCompatActivity() {
             private val paint = android.graphics.Paint().apply {
                 color = 0xff00ff66.toInt()
                 style = android.graphics.Paint.Style.STROKE
-                strokeWidth = 4 * resources.displayMetrics.density
+                strokeWidth = 1.5f * resources.displayMetrics.density
             }
             override fun onDraw(canvas: android.graphics.Canvas) {
                 super.onDraw(canvas)
@@ -112,7 +112,7 @@ class MainActivity : AppCompatActivity() {
         }.apply { visibility = View.GONE; setWillNotDraw(false) }
         countdownView = TextView(this).apply {
             setTextColor(0xffffffff.toInt())
-            textSize = 72f
+            textSize = 36f
             gravity = Gravity.CENTER
             visibility = View.GONE
         }
@@ -448,6 +448,8 @@ class MainActivity : AppCompatActivity() {
         ).also { it.start() }
 
         // 中央倒计时 3-2-1,到点自动拍。拍好后方框与数字一起消失进解题。
+        // 看门狗:takePicture 只是发请求,ImageReader 回调没回来(state 仍为 1)就超时回休眠,
+        // 方框不许一直挂着。
         handler.removeCallbacksAndMessages(null)
         for (i in 3 downTo 1) {
             val delayMs = ((3 - i) * 1000).toLong()
@@ -460,6 +462,13 @@ class MainActivity : AppCompatActivity() {
         handler.postDelayed({
             if (state == 1) {
                 cameraHelper?.takePicture()
+                // 5s 内照片没回来就收方框回休眠,避免一直卡住。
+                handler.postDelayed({
+                    if (state == 1) {
+                        Log.w("ARAnswerer", "Capture watchdog timeout, back to sleep")
+                        goSleep()
+                    }
+                }, 5000)
             }
         }, 3000)
     }
@@ -469,6 +478,12 @@ class MainActivity : AppCompatActivity() {
             handler.removeCallbacksAndMessages(null)
             countdownView?.text = ""
             cameraHelper?.takePicture()
+            handler.postDelayed({
+                if (state == 1) {
+                    Log.w("ARAnswerer", "Capture watchdog timeout, back to sleep")
+                    goSleep()
+                }
+            }, 5000)
         }
     }
 
