@@ -237,6 +237,7 @@ object NativePipelineEngine {
         timeoutMs: Long = 60000L,
         maxAttempts: Int = 2,
         maxTokens: Int? = null,
+        reasoningEffort: String? = null,
         onToken: (suspend (String) -> Unit)? = null
     ): StreamChatResult = withContext(Dispatchers.IO) {
         val modelsToTry = mutableListOf<String>()
@@ -275,6 +276,11 @@ object NativePipelineEngine {
                             }
                             if (maxTokens != null && maxTokens > 0) {
                                 put("max_tokens", maxTokens)
+                            }
+                            // Stage1 低思考强度:网关/DeepSeek/智谱均接受 reasoning_effort=low,
+                            // 不支持的厂商会忽略该字段(已实测 200)。
+                            if (!reasoningEffort.isNullOrEmpty()) {
+                                put("reasoning_effort", reasoningEffort)
                             }
                         }
 
@@ -473,10 +479,22 @@ object NativePipelineEngine {
         try {
             // 增量解析只认已闭合的 {...}:旧正则的非贪婪 content 会在流式半截 JSON 上跨项吞题,
             // 导致 Stage1 进度条乱跳。半截的等下个 onToken 再认。
+            // 先剥掉 <think> 思考块(含流式未闭合的半截):思考内容里的引号/题号不能算题,
+            // 否则 GLM 这类长思考模型会被误解析出上百道“假题”(曾出现 137 题爆炸)。
+            var clean = rawStreamText.replace(Regex("(?s)<think>.*?</think>"), "")
+            val openIdx = clean.lastIndexOf("<think>")
+            if (openIdx != -1) {
+                clean = clean.substring(0, openIdx)
+            }
             val jsonObjectPattern = Pattern.compile("\\{\\s*\"id\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"content\"\\s*:\\s*\"((?:\\\\\"|[^\"])*?)\"[^}]*?\"has_image\"\\s*:\\s*(true|false)[^}]*?\\}", Pattern.DOTALL)
-            val matcher = jsonObjectPattern.matcher(rawStreamText)
+            val matcher = jsonObjectPattern.matcher(clean)
             var count = 0
             while (matcher.find()) {
+                // 题目数熔断:正常一拍最多十几道,超过 20 直接截断,防止思考残留或模型复读撑爆 Stage2。
+                if (count >= 20) {
+                    Log.w(TAG, "Stage1 incremental question count fused at 20")
+                    break
+                }
                 val id = matcher.group(1)?.trim() ?: "${count + 1}"
                 val content = matcher.group(2)?.replace("\\n", " ")?.replace("\\\"", "\"")?.trim() ?: ""
                 val hasImg = matcher.group(3)?.toBoolean() ?: false
@@ -527,12 +545,12 @@ object NativePipelineEngine {
         }
 
         var lastDispatchedCount = 0
-        // Stage1 只做提取:限 45s + max_tokens 4096,到点没回直接 fallback 下一个模型,
+        // Stage1 只做提取:限 45s + max_tokens 4096 + reasoning_effort low,到点没回直接 fallback 下一个模型,
         // 不再一个慢模型上干等 60s×2 次 + 串行 4 个模型。
         // 4096 给推理链留足空间:1024 会把 thinking 截断导致空流误判 fallback。
         val stage1Result = streamMessages(
             context, stage1Messages,
-            timeoutMs = 45000L, maxAttempts = 1, maxTokens = 4096,
+            timeoutMs = 45000L, maxAttempts = 1, maxTokens = 4096, reasoningEffort = "low",
             onToken = { streamAcc ->
                 val partial = parseIncrementalQuestions(streamAcc)
                 if (partial.size > lastDispatchedCount) {
@@ -818,8 +836,13 @@ object NativePipelineEngine {
         try {
             var s = raw.trim()
             // 先清掉 <think> / ```json 围栏等推理残留,再取最外层 [...]。
+            // 含流式未闭合的半截 <think>:思考内容里的行不能算题,否则 GLM 长思考会炸出上百道“假题”。
             s = s.replace(Regex("(?s)<think>.*?</think>"), "")
-                .replace("```json", "").replace("```", "").trim()
+            val openThink = s.lastIndexOf("<think>")
+            if (openThink != -1) {
+                s = s.substring(0, openThink)
+            }
+            s = s.replace("```json", "").replace("```", "").trim()
             val startIdx = s.indexOf('[')
             val endIdx = s.lastIndexOf(']')
             if (startIdx != -1 && endIdx != -1 && endIdx > startIdx) {

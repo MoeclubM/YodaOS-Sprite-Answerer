@@ -94,9 +94,9 @@ class MainActivity : AppCompatActivity() {
 
         val density = resources.displayMetrics.density
 
-        // 取景只显示大方框+中央倒计时,不显示预览画面(预览流后台照常跑,保证对焦)。
+        // 取景只显示大方框+中央倒计时,不显示预览画面(TextureView 必须 VISIBLE 才能出 Surface,仅 alpha=0 隐身,预览流后台照常跑保证对焦)。
         previewCard = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
-        textureView = TextureView(this).apply { alpha = 0f; visibility = View.GONE }
+        textureView = TextureView(this).apply { alpha = 0f; visibility = View.VISIBLE }
         previewCard.addView(textureView, FrameLayout.LayoutParams(-1, -1))
         frameBox = object : View(this) {
             private val paint = android.graphics.Paint().apply {
