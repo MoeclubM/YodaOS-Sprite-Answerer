@@ -207,28 +207,40 @@ object NativePipelineEngine {
 
     private class ToolCallAcc(var id: String, var name: String, val args: StringBuilder)
 
-    /** Stage1 前把原图压到最长边 1280 / JPEG q75:base64 体积缩小约 3~5 倍,上传更快且网关不再 client_gone。 */
-    private fun compressForModel(jpegBytes: ByteArray, maxSide: Int = 1280): ByteArray {
+    /**
+     * 以 500KB 为目标自适应压缩:先定尺寸档(最长边 1920,不足不放大),
+     * 再从 q92 起按档降质量,首个压进 500KB 的版本即用。
+     * 暗糊原图按固定 q75 一刀切会被压到几十 KB,字直接没法看;按体积目标走,
+     * 清晰图多留细节,暗糊图也不再被过度压缩。
+     */
+    private fun compressForModel(jpegBytes: ByteArray, targetBytes: Int = 500 * 1024): ByteArray {
         return try {
+            if (jpegBytes.size <= targetBytes) return jpegBytes
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts)
             if (opts.outWidth <= 0 || opts.outHeight <= 0) return jpegBytes
             var sample = 1
             val longest = maxOf(opts.outWidth, opts.outHeight)
-            while (longest / sample > maxSide) sample *= 2
+            while (longest / sample > 1920) sample *= 2
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
             val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOpts) ?: return jpegBytes
-            val scale = minOf(1f, maxSide.toFloat() / maxOf(bmp.width, bmp.height))
-            val finalBmp = if (scale < 1f) {
+            val scale = minOf(1f, 1920f / maxOf(bmp.width, bmp.height))
+            val sizedBmp = if (scale < 1f) {
                 Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true)
             } else bmp
-            val out = ByteArrayOutputStream()
-            finalBmp.compress(Bitmap.CompressFormat.JPEG, 75, out)
-            if (finalBmp !== bmp) bmp.recycle()
-            finalBmp.recycle()
-            val compressed = out.toByteArray()
-            Log.d(TAG, "Image compressed: ${jpegBytes.size} -> ${compressed.size} bytes")
-            if (compressed.isEmpty()) jpegBytes else compressed
+            var result = jpegBytes
+            for (quality in intArrayOf(92, 85, 78, 70, 60)) {
+                val out = ByteArrayOutputStream()
+                sizedBmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                val bytes = out.toByteArray()
+                if (bytes.isEmpty()) continue
+                result = bytes
+                if (bytes.size <= targetBytes) break
+            }
+            if (sizedBmp !== bmp) bmp.recycle()
+            sizedBmp.recycle()
+            Log.d(TAG, "Image compressed: ${jpegBytes.size} -> ${result.size} bytes")
+            if (result.isEmpty()) jpegBytes else result
         } catch (e: Exception) {
             Log.w(TAG, "Image compress failed, use original: ${e.message}")
             jpegBytes
