@@ -43,7 +43,6 @@ dependencies {
     implementation(libs.appcompat)
     implementation(libs.okhttp)
     implementation(libs.coroutines.android)
-    implementation(libs.exifinterface)
 }
 
 kotlin {
