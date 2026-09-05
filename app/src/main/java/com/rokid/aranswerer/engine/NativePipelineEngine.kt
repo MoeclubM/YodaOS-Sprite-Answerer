@@ -474,6 +474,40 @@ object NativePipelineEngine {
         throw lastErr ?: RuntimeException("请求失败，请检查网络或 API Key")
     }
 
+    /** JSON 字符串反转义:增量解析是正则直接从原始流里抠 content,不走 JSONObject,
+     * 因此 \u4e2d 这类转义会原样显示,需手动还原(最终 JSONArray 解析不受影响)。 */
+    private fun unescapeJsonString(s: String): String {
+        val sb = StringBuilder(s.length)
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (c == '\\' && i + 1 < s.length) {
+                when (val e = s[i + 1]) {
+                    'u' -> {
+                        if (i + 5 < s.length) {
+                            try {
+                                sb.append(s.substring(i + 2, i + 6).toInt(16).toChar())
+                                i += 6
+                                continue
+                            } catch (_: Exception) {}
+                        }
+                        sb.append(c)
+                        i++
+                    }
+                    'n', 'r', 't' -> { sb.append(' '); i += 2 }
+                    '"' -> { sb.append('"'); i += 2 }
+                    '\\' -> { sb.append('\\'); i += 2 }
+                    '/' -> { sb.append('/'); i += 2 }
+                    else -> { sb.append(e); i += 2 }
+                }
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
+    }
+
     private fun parseIncrementalQuestions(rawStreamText: String): List<ExtractedQuestion> {
         val list = mutableListOf<ExtractedQuestion>()
         try {
@@ -496,7 +530,7 @@ object NativePipelineEngine {
                     break
                 }
                 val id = matcher.group(1)?.trim() ?: "${count + 1}"
-                val content = matcher.group(2)?.replace("\\n", " ")?.replace("\\\"", "\"")?.trim() ?: ""
+                val content = unescapeJsonString(matcher.group(2) ?: "").trim()
                 val hasImg = matcher.group(3)?.toBoolean() ?: false
                 if (content.isNotEmpty()) {
                     list.add(ExtractedQuestion(id, content, hasImg, count))
@@ -872,7 +906,7 @@ object NativePipelineEngine {
                 val m = itemPattern.matcher(raw)
                 var idx = 0
                 while (m.find()) {
-                    val content = m.group(1)?.replace("\\n", " ")?.replace("\\\"", "\"")?.trim() ?: ""
+                    val content = unescapeJsonString(m.group(1) ?: "").trim()
                     if (content.length > 5) {
                         list.add(ExtractedQuestion("${idx + 1}", content, true, idx))
                         idx++
