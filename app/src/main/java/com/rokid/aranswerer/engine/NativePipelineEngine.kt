@@ -208,17 +208,21 @@ object NativePipelineEngine {
     private class ToolCallAcc(var id: String, var name: String, val args: StringBuilder)
 
     /**
-     * 原始分辨率单次 q85 重编码:不缩放,只统一质量。4032x3024 原图约 2~3MB,
-     * q85 后约 1~1.5MB,字最清楚;上传体积由固定长度模式兜底,不再按 500KB 缩尺寸。
+     * 眼镜 sensor 横装,实拍像素固定偏转 90°(显示器竖立、字横躺)。
+     * 佩戴方向固定,因此固定逆时针转 90°,输出 3024x4032 竖构图,再 q85 重编码。
+     * 不做任何自适应判断,方向恒定。
      */
     private fun compressForModel(jpegBytes: ByteArray, quality: Int = 85): ByteArray {
         return try {
             val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return jpegBytes
-            val out = ByteArrayOutputStream()
-            bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            val matrix = android.graphics.Matrix().apply { postRotate(270f) }
+            val upright = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
             bmp.recycle()
+            val out = ByteArrayOutputStream()
+            upright.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            upright.recycle()
             val result = out.toByteArray()
-            Log.d(TAG, "Image compressed: ${jpegBytes.size} -> ${result.size} bytes (q$quality, original resolution)")
+            Log.d(TAG, "Image rotated+compressed: ${jpegBytes.size} -> ${result.size} bytes (fixed 270deg CCW, q$quality)")
             if (result.isEmpty()) jpegBytes else result
         } catch (e: Exception) {
             Log.w(TAG, "Image compress failed, use original: ${e.message}")

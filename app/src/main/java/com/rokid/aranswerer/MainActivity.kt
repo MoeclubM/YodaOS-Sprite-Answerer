@@ -49,6 +49,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var contentContainer: FrameLayout
     private lateinit var previewCard: FrameLayout
     private lateinit var textureView: TextureView
+    private var frameBox: View? = null
+    private var countdownView: TextView? = null
     
     private var katexWebView: KaTeXFormulaWebView? = null
     private var stageTextView: TextView? = null
@@ -91,13 +93,32 @@ class MainActivity : AppCompatActivity() {
         root.addView(safeContent, FrameLayout.LayoutParams(-1, -1))
 
         val density = resources.displayMetrics.density
-        val previewW = (280 * density).toInt()
-        val previewH = (180 * density).toInt()
 
+        // 取景只显示大方框+中央倒计时,不显示预览画面(预览流后台照常跑,保证对焦)。
         previewCard = FrameLayout(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
-        textureView = TextureView(this).apply { alpha = 0.35f }
+        textureView = TextureView(this).apply { alpha = 0f; visibility = View.GONE }
         previewCard.addView(textureView, FrameLayout.LayoutParams(-1, -1))
-        safeContent.addView(previewCard, FrameLayout.LayoutParams(previewW, previewH).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = (45 * density).toInt() })
+        frameBox = object : View(this) {
+            private val paint = android.graphics.Paint().apply {
+                color = 0xff00ff66.toInt()
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 4 * resources.displayMetrics.density
+            }
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                super.onDraw(canvas)
+                val m = 10 * resources.displayMetrics.density
+                canvas.drawRect(m, m, width - m, height - m, paint)
+            }
+        }.apply { visibility = View.GONE; setWillNotDraw(false) }
+        countdownView = TextView(this).apply {
+            setTextColor(0xffffffff.toInt())
+            textSize = 72f
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        previewCard.addView(frameBox, FrameLayout.LayoutParams(-1, -1))
+        previewCard.addView(countdownView, FrameLayout.LayoutParams(-1, -1).apply { gravity = Gravity.CENTER })
+        safeContent.addView(previewCard, FrameLayout.LayoutParams(-1, -1))
 
         contentContainer = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
@@ -402,8 +423,9 @@ class MainActivity : AppCompatActivity() {
         updateBatteryStepDisplay(step = 1)
         contentContainer.visibility = View.GONE
         previewCard.visibility = View.VISIBLE
-        status.visibility = View.VISIBLE
-        status.text = "取景中..."
+        frameBox?.visibility = View.VISIBLE
+        countdownView?.visibility = View.VISIBLE
+        status.visibility = View.GONE
 
         cameraHelper?.stop()
         cameraHelper = NativeCamera2Helper(
@@ -425,10 +447,18 @@ class MainActivity : AppCompatActivity() {
             }
         ).also { it.start() }
 
+        // 中央倒计时 3-2-1,到点自动拍。拍好后方框与数字一起消失进解题。
         handler.removeCallbacksAndMessages(null)
+        for (i in 3 downTo 1) {
+            val delayMs = ((3 - i) * 1000).toLong()
+            handler.postDelayed({
+                if (state == 1) {
+                    countdownView?.text = "$i"
+                }
+            }, delayMs)
+        }
         handler.postDelayed({
             if (state == 1) {
-                status.text = "正在拍照..."
                 cameraHelper?.takePicture()
             }
         }, 3000)
@@ -437,7 +467,7 @@ class MainActivity : AppCompatActivity() {
     private fun triggerHardwareCapture() {
         if (state == 1) {
             handler.removeCallbacksAndMessages(null)
-            status.text = "正在拍照..."
+            countdownView?.text = ""
             cameraHelper?.takePicture()
         }
     }
@@ -453,7 +483,11 @@ class MainActivity : AppCompatActivity() {
     private fun solve(bytes: ByteArray) {
         state = 2
         updateBatteryStepDisplay(step = 1)
+        // 拍好后方框与倒计时立刻消失,再进解题。
         previewCard.visibility = View.GONE
+        frameBox?.visibility = View.GONE
+        countdownView?.visibility = View.GONE
+        countdownView?.text = ""
 
         // 每次拍照静默存一份原图到固定备份目录,不碰 UI 不提示。
         try {
@@ -554,6 +588,9 @@ class MainActivity : AppCompatActivity() {
         status.visibility = View.GONE
         contentContainer.visibility = View.GONE
         previewCard.visibility = View.GONE
+        frameBox?.visibility = View.GONE
+        countdownView?.visibility = View.GONE
+        countdownView?.text = ""
         stageTextView?.visibility = View.GONE
         katexWebView?.visibility = View.GONE
         lifecycleScope.launch(Dispatchers.IO) {
