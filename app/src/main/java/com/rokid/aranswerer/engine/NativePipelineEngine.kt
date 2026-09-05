@@ -208,6 +208,41 @@ object NativePipelineEngine {
     private class ToolCallAcc(var id: String, var name: String, val args: StringBuilder)
 
     /**
+     * 按 EXIF 方向把 JPEG 摆正再压缩:竖屏设备上 sensor 横装时 JPEG 自带 90/270 度 EXIF,
+     * 不摆正直接发,模型拿到的字是竖排的,直接 NO_QUESTION。
+     * 用 BitmapFactory + Matrix 物理旋转,摆正后 EXIF 不再生效,避免网关二次旋转叠加。
+     */
+    private fun normalizeOrientation(jpegBytes: ByteArray): ByteArray {
+        return try {
+            val exif = androidx.exifinterface.media.ExifInterface(java.io.ByteArrayInputStream(jpegBytes))
+            val orientation = exif.getAttributeInt(
+                androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
+            )
+            val degrees = when (orientation) {
+                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+            if (degrees == 0f) return jpegBytes
+            val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return jpegBytes
+            val matrix = android.graphics.Matrix().apply { postRotate(degrees) }
+            val rotated = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+            bmp.recycle()
+            val out = ByteArrayOutputStream()
+            rotated.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+            rotated.recycle()
+            val fixed = out.toByteArray()
+            Log.d(TAG, "Image orientation fixed: exif=$orientation rotated ${degrees}deg")
+            if (fixed.isEmpty()) jpegBytes else fixed
+        } catch (e: Exception) {
+            Log.w(TAG, "Orientation normalize failed, use original: ${e.message}")
+            jpegBytes
+        }
+    }
+
+    /**
      * 以 500KB 为目标自适应压缩:先定尺寸档(最长边 1920,不足不放大),
      * 再从 q92 起按档降质量,首个压进 500KB 的版本即用。
      * 暗糊原图按固定 q75 一刀切会被压到几十 KB,字直接没法看;按体积目标走,
@@ -513,8 +548,9 @@ object NativePipelineEngine {
         onStage2TripleColumnUpdate: suspend (List<QuestionStatus>, String) -> Unit,
         onStage3StreamToken: suspend (String) -> Unit
     ): String = withContext(Dispatchers.IO) {
-        // 原图 1920x1080 直接 base64 上传约 1~2MB,是 Stage1 首字慢 + 网关 client_gone 的主因之一。
-        val compressed = compressForModel(jpegBytes)
+        // 先按 EXIF 摆正再压:竖屏 sensor 横装时 JPEG 带 90/270 度方向,不摆正模型看到竖排字直接 NO_QUESTION。
+        val upright = normalizeOrientation(jpegBytes)
+        val compressed = compressForModel(upright)
         val base64Image = Base64.encodeToString(compressed, Base64.NO_WRAP)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
 
@@ -563,7 +599,40 @@ object NativePipelineEngine {
         val rawQuestions = stage1Result.content.ifEmpty { stage1Result.reasoning }
         Log.d(TAG, "Stage 1 raw result: $rawQuestions")
 
+        // NO_QUESTION 不直接认输:首选模型可能因图暗/倾斜认怂(如实测 MuseSpark),换下一个模型重试一次。
+        // 当前 currentModel 已被 streamMessages 切到 fallback 链下一位,直接复用即可。
         if (isStrictNoQuestion(rawQuestions)) {
+            Log.w(TAG, "Stage 1 NO_QUESTION, retry once with next model $currentModel")
+            try {
+                var retryDispatched = 0
+                val retryResult = streamMessages(
+                    context, stage1Messages,
+                    timeoutMs = 45000L, maxAttempts = 1, maxTokens = 4096,
+                    onToken = { streamAcc ->
+                        val partial = parseIncrementalQuestions(streamAcc)
+                        if (partial.size > retryDispatched) {
+                            retryDispatched = partial.size
+                            withContext(Dispatchers.Main) {
+                                onStage1QuestionsUpdate(partial)
+                            }
+                        }
+                    }
+                )
+                val retryRaw = retryResult.content.ifEmpty { retryResult.reasoning }
+                Log.d(TAG, "Stage 1 retry raw result: $retryRaw")
+                if (!isStrictNoQuestion(retryRaw)) {
+                    val retryQuestions = parseQuestionsJson(retryRaw)
+                    if (retryQuestions.isNotEmpty()) {
+                        onStage1QuestionsUpdate(retryQuestions)
+                        return@withContext solveAndSummarize(
+                            context, dataUrl, retryQuestions,
+                            onStage2TripleColumnUpdate, onStage3StreamToken
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Stage 1 NO_QUESTION retry failed: ${e.message}")
+            }
             return@withContext "未识别到题目"
         }
 
@@ -575,6 +644,20 @@ object NativePipelineEngine {
 
         onStage1QuestionsUpdate(questions)
 
+        return@withContext solveAndSummarize(
+            context, dataUrl, questions,
+            onStage2TripleColumnUpdate, onStage3StreamToken
+        )
+    }
+
+    /** Stage2 并发求解 + Stage3 排版:主流程与 NO_QUESTION 重试共用。 */
+    private suspend fun solveAndSummarize(
+        context: Context,
+        dataUrl: String,
+        questions: List<ExtractedQuestion>,
+        onStage2TripleColumnUpdate: suspend (List<QuestionStatus>, String) -> Unit,
+        onStage3StreamToken: suspend (String) -> Unit
+    ): String = withContext(Dispatchers.IO) {
         // ================= Stage 2: 多题并发求解 =================
         Log.d(TAG, "=== Entering Stage 2: Solving ${questions.size} Questions with $currentModel ===")
         val statusList = questions.map { QuestionStatus(it.id, it.originalOrder, toolCount = 0, isDone = false) }.toMutableList()

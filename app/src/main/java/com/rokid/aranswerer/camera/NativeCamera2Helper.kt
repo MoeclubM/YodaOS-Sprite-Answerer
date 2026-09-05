@@ -41,7 +41,10 @@ class NativeCamera2Helper(
 
     private var cameraId = "0"
     private var previewSize = Size(640, 480)
-    private var captureSize = Size(1920, 1080) // 提升为高清拍摄分辨率
+    // 眼镜屏幕是竖屏 480x640(9:16 类手机竖屏),拍照必须取竖构图 (1080x1920),
+    // 否则横拍竖看,模型拿到的字是旋转 90 度的,直接 NO_QUESTION。
+    private var captureSize = Size(1080, 1920)
+    private var sensorOrientation = 0
 
     fun start() {
         startBackgroundThread()
@@ -88,6 +91,9 @@ class NativeCamera2Helper(
                 addTarget(reader.surface)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                // 竖屏设备上 sensor 多为横装:按 sensor 方向写 JPEG_ORIENTATION,
+                // 让 JPEG 自带正确的 EXIF 方向,解码出来就是正的。
+                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
             }
 
             session.capture(captureBuilder.build(), object : CameraCaptureSession.CaptureCallback() {}, handler)
@@ -107,6 +113,8 @@ class NativeCamera2Helper(
             cameraId = cameraIds[0]
 
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+            // 读 sensor 真实安装方向:竖屏设备上多为 90/270(横装),拍照时靠它写 JPEG_ORIENTATION 摆正。
+            sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             if (map != null) {
                 val outputSizes = map.getOutputSizes(SurfaceTexture::class.java)
@@ -115,13 +123,15 @@ class NativeCamera2Helper(
                 }
                 val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)
                 if (!jpegSizes.isNullOrEmpty()) {
-                    // 挑选设备支持的最佳高清拍摄分辨率 (优先选择 1920x1080 -> 1280x960 -> 1280x720 -> 最大尺寸)
-                    captureSize = jpegSizes.firstOrNull { it.width == 1920 && it.height == 1080 }
-                        ?: jpegSizes.firstOrNull { it.width == 1280 && it.height == 960 }
-                        ?: jpegSizes.firstOrNull { it.width == 1280 && it.height == 720 }
+                    // 竖屏设备取竖构图:优先 1080x1920 -> 960x1280 -> 720x1280 -> 最高竖边。
+                    // 旧逻辑取横构图 1920x1080,竖屏上看到的字是旋转 90 度的。
+                    captureSize = jpegSizes.firstOrNull { it.width == 1080 && it.height == 1920 }
+                        ?: jpegSizes.firstOrNull { it.width == 960 && it.height == 1280 }
+                        ?: jpegSizes.firstOrNull { it.width == 720 && it.height == 1280 }
+                        ?: jpegSizes.filter { it.height >= it.width }.maxByOrNull { it.width * it.height }
                         ?: jpegSizes[0]
                 }
-                Log.d("NativeCamera2", "Selected Capture Size: ${captureSize.width}x${captureSize.height}, Preview Size: ${previewSize.width}x${previewSize.height}")
+                Log.d("NativeCamera2", "Selected Capture Size: ${captureSize.width}x${captureSize.height}, Preview Size: ${previewSize.width}x${previewSize.height}, SensorOrientation: $sensorOrientation")
             }
 
             imageReader = ImageReader.newInstance(captureSize.width, captureSize.height, ImageFormat.JPEG, 2).apply {
